@@ -1,0 +1,6 @@
+dataset/
+dataset_images/
+models/
+DownloadConceptualCaptions/
+exp/
+.jpg
