@@ -124,8 +124,8 @@ def update_clipcap(CLIP_Net, train_loader, test_loader, model, save_dir, epochs,
 
     return model, loss_list, test_loss_list
 
-def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5):
-    
+def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5):
+    print("start training clipcap with alpha:", alpha, "beta:", beta)
     clipcap = clipcap.to(device)
     clipcap.train()
 
@@ -135,36 +135,37 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader, sa
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    warmup_steps = int(warmup_steps_percent * epochs * len(train_loader))
+    warmup_steps = int(warmup_steps_percent * epochs * len(train_loader_shuffle))
     params = list(clipcap.parameters())
 
     optimizer = AdamW(params, lr=lr)
     scheduler = get_linear_schedule_with_warmup(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-        optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader)
+        optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader_shuffle)
     )
 
     loss_list = []
     loss_der_list = []
     loss_derpp_list = []
 
-    generated_text = generate_test(clipcap, CLIP_Net, train_loader, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.6)
+    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.6)
     print("before training(finetune)", generated_text)
 
     for epoch in range(epochs):
         print(f">>> Training epoch {epoch}")
         sys.stdout.flush()
-        progress = tqdm(total=len(train_loader), desc=output_prefix)
-        for idx, batch in enumerate(train_loader):
+        progress = tqdm(total=len(train_loader_shuffle), desc=output_prefix)
+        for idx, batch in enumerate(train_loader_shuffle):
             clipcap.zero_grad()
-            img, caption, vlm_token, gpt_token, gpt_mask, index  = batch
+            # img, caption, vlm_token, gpt_token, gpt_mask, index  = batch
+            img, vlm_token, gpt_token, gpt_mask, index = batch["image"], batch["vlm_token"], batch["gpt_token"], batch["gpt_mask"], batch["index"]
             img, gpt_token, gpt_mask = img.to(device), gpt_token.to(device), gpt_mask.to(device)
 
-            # prefix = CLIP_Net.encode_image(img).to(device, dtype=torch.float32)
             prefix = agent_z[index].to(device)
+            
             
             outputs = clipcap(gpt_token, prefix, gpt_mask)
 
-            logits = outputs.logits[:, train_loader.dataset.prefix_length - 1: -1]
+            logits = outputs.logits[:, train_loader_shuffle.dataset.prefix_length - 1: -1]
 
             loss = nnf.cross_entropy(logits.reshape(-1, logits.shape[-1]), gpt_token.flatten(), ignore_index=0)
             loss.backward(retain_graph=True)
@@ -179,11 +180,11 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader, sa
             
             # Dark experience replay (DER)
             if train_mode == "DER" or train_mode == "DERPP":
-                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(train_loader.batch_size // 5)
+                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(16)
                 emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
 
                 outputs = clipcap(gpt_token, emb, gpt_mask)
-                outputs_logits = outputs.logits[:, train_loader.dataset.prefix_length - 1: -1]
+                outputs_logits = outputs.logits[:, train_loader_fix.dataset.prefix_length - 1: -1]
 
                 # Dark experience replay (DER)
                 # Use Euclidean distance between the logits of the current model and the logits of the model trained on the buffer
@@ -194,11 +195,11 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader, sa
                     print("dark knowledge loss", loss_der.item(), "alpha", alpha)
 
             if train_mode == "DERPP" or train_mode == "ER" or train_mode == "ER_RS":
-                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(train_loader.batch_size // 5)
+                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(16)
                 emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
 
                 outputs = clipcap(gpt_token, emb, gpt_mask)
-                outputs_logits = outputs.logits[:, train_loader.dataset.prefix_length - 1: -1]
+                outputs_logits = outputs.logits[:, train_loader_fix.dataset.prefix_length - 1: -1]
                 
                 # Dark experience replay ++ (DER++)
                 # Use cross-entropy loss between the logits of the current model and correct tokens
@@ -216,7 +217,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader, sa
             progress.update()
 
             loss_list.append(loss.item())
-        generated_text = generate_test(clipcap, CLIP_Net, train_loader, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.6)
+        generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.6)
         print("epoch(finetune)", epoch, generated_text)
             
         if train_mode != "None":
@@ -233,7 +234,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader, sa
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_der.npy"), np.array(loss_der_list))
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_derpp.npy"), np.array(loss_derpp_list))
 
-        if save_every > 0 and epoch+1 % save_every == 0:
+        if save_every > 0 and epoch+1 % save_every == 0 or epoch == 0 or epoch == epochs-1:
             torch.save(
                 clipcap.state_dict(),
                 os.path.join(save_dir, f"{output_prefix}-{epoch:03d}.pt"),
@@ -262,8 +263,10 @@ def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epoc
         for batch in train_loader:
             # tepoch.set_description('Epoch {}'.format(eph))
 
-            vlm_token = batch[2].to(device)
-            index = batch[5]
+            # vlm_token = batch[2].to(device)
+            # index = batch[5]
+            vlm_token = batch["vlm_token"].to(device)
+            index = batch["index"]
 
             z = agent_z[index].to(device)
 
@@ -288,7 +291,7 @@ def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epoc
         
         np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), np.array(loss_list)) 
 
-        if save_every > 0 and eph+1 % save_every == 0:
+        if save_every > 0 and eph+1 % save_every == 0 or eph == 0 or eph == epochs-1:
             torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph}.pth"))
 
     return BayesCap_Net

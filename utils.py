@@ -1,4 +1,4 @@
-import os
+import os, ujson
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,6 +13,7 @@ from torch.distributions.gamma import Gamma
 
 from tqdm import tqdm, trange
 import random
+
 
 from transformers import GPT2Tokenizer
 import torch
@@ -332,24 +333,150 @@ class ConceptualDatasetFull(Dataset):
     def __len__(self) -> int:
         return len(self.ids)
 
-class CocoConceptualDataset(Dataset):
-    def __init__(self, gpt2_type: str = "gpt2", data_mode: str = "train" , transform=None, prefix_length = 40, normalize_prefix = True, ids = None, datasize = "full") -> None:
-        self.root = "DownloadConceptualCaptions"
+class UnifiedDataset(Dataset):
+    def __init__(self, root_coco: str = 'dataset/', root_cc3m: str = 'DownloadConceptualCaptions', 
+                 gpt2_type: str = "gpt2", data_mode: str = "train", transform=None, 
+                 prefix_length=40, datasize_coco="full", datasize_cc3m="full", normalize_prefix=True):
+        self.root_coco = root_coco
+        self.root_cc3m = root_cc3m
         self.data_mode = data_mode
-        self.gpt_tokenizer = GPT2Tokenizer.from_pretrained(gpt2_type)
-        self.vlm_tokenizer = tokenize
-        self.datasize = datasize
-        self.set_conceptual_dataset(ids)
         self.transform = transform
         self.prefix_length = prefix_length
+        self.gpt_tokenizer = GPT2Tokenizer.from_pretrained(gpt2_type)
+        self.vlm_tokenizer = tokenize  # Assuming 'tokenize' is defined elsewhere
 
-    def set_conceptual_dataset(self, ids):
+        self.coco_dataset = self.set_coco_dataset(datasize=datasize_coco)
+        self.cc3m_dataset = self.set_conceptual_dataset(datasize=datasize_cc3m)
+        
+        self.dataset = self.coco_dataset + self.cc3m_dataset
+        
+        # 最大トークン長を計算して設定
+        all_tokens = [item["gpt_token"] for item in self.dataset]
+        all_len = torch.tensor([len(tokens) for tokens in all_tokens]).float()
+        self.max_seq_len = min(int(all_len.mean() + all_len.std() * 10), int(all_len.max()))
+
+    def set_coco_dataset(self, datasize):
         if self.data_mode == "train":
-            self.image_root = os.path.join(self.root, 'training')
-            self.data_file = os.path.join(self.root, 'training_imgtxt.tsv')
+            ids, extra_ids, _, _, image_root, annFile, extra_annFile = _get_coco_file_paths(os.path.join(self.root_coco, 'coco'))
         elif self.data_mode == "test":
-            self.image_root = os.path.join(self.root, 'validation')
-            self.data_file = os.path.join(self.root, 'validation_imgtxt.tsv')
+            _, _, _, ids, image_root, _, annFile = _get_coco_file_paths(os.path.join(self.root_coco, 'coco'))
+            extra_ids = None
+            extra_annFile = None
+
+        coco = COCO(annFile)
+        
+        if extra_annFile is not None:
+            with open(annFile, 'r') as fin1, open(extra_annFile, 'r') as fin2:
+                dataset = json.load(fin1)
+                extra_dataset = json.load(fin2)
+                if not isinstance(dataset, dict) or not isinstance(extra_dataset, dict):
+                    raise TypeError('invalid type {} {}'.format(type(dataset),
+                                                                type(extra_dataset)))
+                if set(dataset.keys()) != set(extra_dataset.keys()):
+                    raise KeyError('key mismatch {} != {}'.format(list(dataset.keys()),
+                                                                    list(extra_dataset.keys())))
+                for key in ['images', 'annotations']:
+                    dataset[key].extend(extra_dataset[key])
+            coco.dataset = dataset
+            coco.createIndex()
+
+        ids = list(coco.anns.keys()) if ids is None else list(ids)
+        if extra_ids is not None:
+            ids += list(extra_ids)
+        ids = [int(id_) for id_ in ids]
+        
+        if datasize == "full":
+            print("full")
+            ids = ids
+        elif "full" in datasize:
+            print("full + ", datasize)
+            datasize = int(datasize.split("_")[1])
+            ids = ids[:datasize]
+        elif datasize is not None:
+            print(datasize)
+            ids = ids[::5][:int(datasize)]
+        else:
+            print("else")
+            ids = ids[::5]
+
+        captions = [coco.loadAnns(id_)[0]['caption'] for id_ in ids]
+        images = [coco.loadImgs(coco.loadAnns(id_)[0]['image_id'])[0]['file_name'] for id_ in ids]
+        
+        vlm_tokens, gpt_tokens = self.get_tokens_list(captions)
+        
+        return [{"image": os.path.join(image_root, img), "caption": caption, "vlm_token": vlm_token, "gpt_token": gpt_token, "dataset": "COCO"} 
+                for img, caption, vlm_token, gpt_token in zip(images, captions, vlm_tokens, gpt_tokens)]
+
+    def set_conceptual_dataset(self, datasize):
+        if self.data_mode == "train":
+            image_root = os.path.join(self.root_cc3m, 'training')
+            data_file = os.path.join(self.root_cc3m, 'training_imgtxt.tsv')
+        elif self.data_mode == "test":
+            image_root = os.path.join(self.root_cc3m, 'validation')
+            data_file = os.path.join(self.root_cc3m, 'validation_imgtxt.tsv')
+
+        data = pd.read_csv(data_file, delimiter='\t', header=0)
+        if datasize != "full":
+            data = data[:int(datasize)]
+
+        captions = data['caption'].tolist()
+        images = data['image'].tolist()
+        
+        vlm_tokens, gpt_tokens = self.get_tokens_list(captions)
+        
+        return [{"image": os.path.join(image_root, img), "caption": caption, "vlm_token": vlm_token, "gpt_token": gpt_token, "dataset": "CC3M"} 
+                for img, caption, vlm_token, gpt_token in zip(images, captions, vlm_tokens, gpt_tokens)]
+    
+    def get_tokens_list(self, captions):
+        vlm_tokens_list = []
+        gpt_tokens_list = []
+        for caption in tqdm(captions):
+            vlm_tokens = self.vlm_tokenizer(caption)
+            gpt_tokens = torch.tensor(self.gpt_tokenizer.encode(caption))
+            vlm_tokens_list.append(vlm_tokens[0])
+            gpt_tokens_list.append(gpt_tokens)
+        return vlm_tokens_list, gpt_tokens_list
+
+    def pad_tokens(self, tokens):
+        padding = self.max_seq_len - tokens.shape[0]
+        if padding > 0:
+            tokens = torch.cat((tokens, torch.zeros(padding, dtype=torch.int64) - 1))
+        elif padding < 0:
+            tokens = tokens[:self.max_seq_len]
+        mask = tokens.ge(0)
+        tokens[~mask] = 0
+        mask = mask.float()
+        mask = torch.cat((torch.ones(self.prefix_length), mask), dim=0)
+        return tokens, mask
+
+    def get_img(self, index: int):
+        item = self.dataset[index]
+        img = Image.open(item["image"]).convert('RGB')
+        return img
+
+    def __getitem__(self, index: int):
+        item = self.dataset[index]
+        img = Image.open(item["image"]).convert('RGB')
+        gpt_token, gpt_mask = self.pad_tokens(item["gpt_token"])
+        
+        if self.transform is not None:
+            img = self.transform(img)
+
+        # 常にキャプションを含む形式で返す
+        return {
+            "image": img,
+            "caption": item["caption"],
+            "vlm_token": item["vlm_token"],
+            "gpt_token": gpt_token,
+            "gpt_mask": gpt_mask,
+            "dataset_type": item["dataset"],
+            "index": index
+        }
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+
 
 def set_caption_to_dataset(dataset, captions=None, caption_file=None):
     """
@@ -1046,9 +1173,13 @@ def generate_test(ClipCap, CLIP_Net, dataloader, tokenizer, sample_num, device =
     generated_list = []
     num_text = 0
     for i, batch in enumerate(tqdm(dataloader)):
-        img = batch[0].to(device)
-        gpt_token = batch[3].to(device)
-        gpt_mask = batch[4].to(device)
+        # img = batch[0].to(device)
+        # gpt_token = batch[3].to(device)
+        # gpt_mask = batch[4].to(device)
+        img = batch['image'].to(device)
+        gpt_token = batch['gpt_token'].to(device)
+        gpt_mask = batch['gpt_mask'].to(device)
+
         img, gpt_token, gpt_mask = img.to(device), gpt_token.to(device), gpt_mask.to(device)
         
         prefix = CLIP_Net.encode_image(img).to(device, dtype=torch.float32)
@@ -1092,3 +1223,127 @@ def sample_ggd(mu, sigma, beta):
     # 一般化ガウス分布への変換
     samples = mu + sigma * rademacher_samples * torch.pow(torch.abs(gamma_samples), torch.reciprocal(beta))
     return samples
+
+def save_args_to_json(args, filename="config.json", save_dir="save_models"):
+    args_dict = vars(args)
+    os.makedirs(save_dir, exist_ok=True)
+    filepath = os.path.join(save_dir, filename)
+    with open(filepath, 'w') as f:
+        ujson.dump(args_dict, f, indent=4)
+
+if __name__ == "__main__":
+    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    clip_model, preprocess = clip.load("ViT-B/32", device=device)
+
+    datasize_coco = 0
+    datasize_cc3m = 10000
+    # データセットの初期化
+    dataset = UnifiedDataset(data_mode='test', transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
+
+    # save dataset to pickle
+    with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+        pickle.dump(dataset, f)
+    exit()
+    coco_dataset = CocoDataset(root="dataset/", transform=preprocess, datasize="1000",data_mode='train')
+
+    # DataLoaderの作成
+    dataloader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=8)
+    # coco_dataloader = DataLoader(coco_dataset, batch_size=16, shuffle=False, num_workers=1)
+
+    # データセットに含まれる画像を保存
+    import matplotlib.pyplot as plt
+    # make directory (communication_coco_5000_cc3m_5000)
+    os.makedirs(f"dataset_images/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}", exist_ok=True)
+    for i in tqdm(range(len(dataset))):
+        img = dataset.get_img(i)
+        plt.imshow(img)
+        plt.savefig(f"dataset_images/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}/image_{i}.png")
+
+
+    exit()
+    for batch in coco_dataloader:
+        # img, caption, vlm_token, gpt_token, gpt_mask, index
+        image = batch[0]
+        caption = batch[1]
+        vlm_token = batch[2]
+        gpt_token = batch[3]
+        gpt_mask = batch[4]
+        index = batch[5]
+        print("COCO Dataset content:")
+        print(f"Images: {image.shape}")
+        print(caption[:10])
+        print(f"VLM Tokens: {vlm_token.shape}")
+        print(f"GPT Tokens: {gpt_token.shape}")
+        print(f"GPT Masks: {gpt_mask.shape}")
+        print(f"Index: {index}")
+
+
+
+    print("Dataset length:", len(dataset))
+
+    coco_num = 0
+    cc3m_num = 0
+
+    # バッチを取得して内容を確認する
+    for batch in tqdm(dataloader):
+        # print("Batch content:")
+        image = batch['image']
+        caption = batch['caption']
+        vlm_token = batch['vlm_token']
+        gpt_token = batch['gpt_token']
+        gpt_mask = batch['gpt_mask']
+        datatype = batch['dataset_type']
+        index = batch['index']
+        print("Unified Dataset content:")
+        print(f"Images: {image.shape}")
+        print(caption)
+        print(f"VLM Tokens: {vlm_token.shape}")
+        print(f"GPT Tokens: {gpt_token.shape}")
+        print(f"GPT Masks: {gpt_mask.shape}")
+        print(f"Dataset Type: {datatype}")
+        print(f"Index: {index}")
+        # save image
+        import matplotlib.pyplot as plt
+        for j, img in enumerate(image):
+            img = img.permute(1, 2, 0)
+            plt.imshow(img)
+            plt.savefig(f"image_{j}.png")
+        break
+
+        # print(f"Images: {image.size()}")
+
+        # print(f"Images: {batch['image'].size()}")
+        # print(f"Captions: {batch['caption']}")
+        # print(f"VLM Tokens: {batch['vlm_token']}")
+        # print(f"GPT Tokens: {batch['gpt_token']}")
+        # print(f"GPT Masks: {batch['gpt_mask']}")
+        # print(f"Dataset Type: {batch['dataset_type']}")
+        # print(f"Index: {batch['index']}")
+        # datatype_list.extend(batch['dataset_type'])
+        # batch['dataset_type'] に含まれる各要素が'COCO'か'CC3M'かをカウント
+        coco_num += batch["dataset_type"].count("COCO")
+        cc3m_num += batch["dataset_type"].count("CC3M")
+        # coco_num += (batch['dataset_type'] == 'COCO')
+        # cc3m_num += (batch['dataset_type'] == 'CC3M').sum().item()
+        # break  # 最初のバッチだけ確認するためにループを終了
+        break
+    
+    print(f"COCO: {coco_num}, CC3M: {cc3m_num}")
+
+
+
+    # テストモードの確認
+    dataset_test = UnifiedDataset(data_mode='test', transform=preprocess, datasize_coco="1000", datasize_cc3m="1000")
+
+    dataloader_test = DataLoader(dataset_test, batch_size=4, shuffle=False)
+
+    for batch in dataloader_test:
+        print("\nTest mode batch content:")
+        print(f"Images: {batch['image'].size()}")
+        print(f"Captions: {batch['caption']}")
+        print(f"VLM Tokens: {batch['vlm_token']}")
+        print(f"GPT Tokens: {batch['gpt_token']}")
+        print(f"GPT Masks: {batch['gpt_mask']}")
+        print(f"Dataset Type: {batch['dataset_type']}")
+        print(f"Index: {batch['index']}")
+        break  # 最初のバッチだけ確認するためにループを終了

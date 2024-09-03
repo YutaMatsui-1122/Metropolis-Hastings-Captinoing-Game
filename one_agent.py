@@ -29,7 +29,7 @@ from update_models import *
 _tokenizer = _Tokenizer()
 
 class OneAgent(nn.Module):
-    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10):
+    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, der_alpha=0.5, derpp_beta=0.5):
         super().__init__()
         self.agent_name = agent_name
         self.device = device
@@ -48,7 +48,7 @@ class OneAgent(nn.Module):
         self.num_layers = 8
         self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
         self.ClipCap = ClipCaptionPrefix(self.prefix_length, self.prefix_length_clip, self.prefix_dim, self.num_layers, self.adapter)
-    
+
         self.GGL = GenGaussLoss(reduction='batchsum')
         self.clipcap_loss_list = []
         self.clipcap_loss_list_test = []
@@ -59,25 +59,37 @@ class OneAgent(nn.Module):
 
         self.td_update_epochs = td_update_epochs
         self.te_update_epochs = te_update_epochs
+        self.temperature = temperature
+        self.der_alpha = der_alpha
+        self.derpp_beta = derpp_beta
     
     def initialize_sign(self):
         print("Agent", self.agent_name, " initialize sign")
         with torch.no_grad():
             i = 0
             for batch in self.dataloader_MHNG_fix:
-                img = batch[0].to(self.device)
+                # img = batch[0].to(self.device)
+                img = batch["image"].to(self.device)
                 mu, _, _, _ = self.image_encoder(img)
                 texts = self.text_decoder(mu)
-                for text in texts:
-                    self.dataloader_MHNG_fix.dataset.captions[i] = text
-                    self.dataloader_MHNG_fix.dataset.vlm_tokens[i] = tokenize(text)[0]
-                    self.dataloader_MHNG_fix.dataset.gpt_tokens[i] = torch.tensor(self.tokenizer.encode(text))
+                for b, text in enumerate(texts):
+                    caption = text
+                    vlm_token = tokenize(text)[0]
+                    gpt_token = torch.tensor(self.tokenizer.encode(text))
+                    
+                    datatype = batch["dataset_type"][b]
+                    self.dataloader_MHNG_fix.dataset.dataset[i]["caption"] = caption
+                    self.dataloader_MHNG_fix.dataset.dataset[i]["vlm_token"] = vlm_token
+                    self.dataloader_MHNG_fix.dataset.dataset[i]["gpt_token"] = gpt_token
+                    self.dataloader_MHNG_fix.dataset.dataset[i]["dataset"] = datatype
+
                     i += 1
     
     def save_sign(self, status):
         # save sign in dataloader_MHNG_fix with status
         print("Agent", self.agent_name, " save sign")
-        captions = self.dataloader_MHNG_fix.dataset.captions
+        # captions = self.dataloader_MHNG_fix.dataset.captions
+        captions = [self.dataloader_MHNG_fix.dataset.dataset[i]["caption"] for i in range(len(self.dataloader_MHNG_fix.dataset))]
         # save sign in csv
         df = pd.DataFrame({'captions': captions})
         df.to_csv(f"{self.save_dir}/sign_{status}.csv")
@@ -110,17 +122,18 @@ class OneAgent(nn.Module):
             mu_cap, alpha_cap, sigma_cap = self.ProbVLM_Net.txt_BayesCap(z)
         return mu_cap, alpha_cap, sigma_cap
     
-    def text_decoder(self, z, temperature=0.62): # z: latent vector
+    def text_decoder(self, z): # z: latent vector
         with torch.no_grad():
             prefix_embeds = self.ClipCap.clip_project(z.float()).reshape(z.shape[0], self.prefix_length, -1)
-            t = generate_batch(self.ClipCap, self.tokenizer, embed=prefix_embeds, temperature=temperature)
+            t = generate_batch(self.ClipCap, self.tokenizer, embed=prefix_embeds, temperature=self.temperature)
         return t
     
     def perception(self): # tempral version of perception 
         print("Agent", self.agent_name, " perception")
         z = []
         for batch in self.dataloader_MHNG_fix:
-            o = batch[0].to(self.device)
+            # o = batch[0].to(self.device)
+            o = batch["image"].to(self.device)
             mu_img, alpha_img, sigma_img, _ = self.image_encoder(o)
             z.append(mu_img)
         self.z = torch.cat(z, dim=0)
@@ -130,7 +143,8 @@ class OneAgent(nn.Module):
         with torch.no_grad():
             proposed_w = []
             for i, batch in enumerate(self.dataloader_MHNG_fix):
-                index = batch[-1]
+                # index = batch[-1]
+                index = batch["index"]
                 w = self.text_decoder(self.z[index])
                 proposed_w.append(tokenize(w))
             proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
@@ -140,7 +154,11 @@ class OneAgent(nn.Module):
     def judge(self, proposed_w, iter = 0):
         print("Agent", self.agent_name, " judge")
         with torch.no_grad():
-            before_self_w = torch.cat(self.dataloader_MHNG_fix.dataset.vlm_tokens, dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
+            
+            # before_self_w = torch.cat(self.dataloader_MHNG_fix.dataset.vlm_tokens, dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
+            vlm_token = [self.dataloader_MHNG_fix.dataset.dataset[i]["vlm_token"] for i in range(len(self.dataloader_MHNG_fix.dataset))]
+            before_self_w = torch.cat(vlm_token, dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
+            # before_self_w = torch.cat(self.dataloader_MHNG_fix.dataset.dataset["vlm_token"], dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
             updated_index_list = []
             # mu_Sp_list = []
             # mu_Li_list = []
@@ -164,7 +182,8 @@ class OneAgent(nn.Module):
                 exit()
             # elif 
             for i, batch in enumerate(self.dataloader_MHNG_fix):
-                index = batch[-1]
+                # index = batch[-1]
+                index = batch["index"]
                 
                 mu_Sp, alpha_Sp, beta_Sp = self.text_encoder(proposed_w[index])
                 mu_Li, alpha_Li, beta_Li = self.text_encoder(before_self_w[index])
@@ -196,9 +215,14 @@ class OneAgent(nn.Module):
                 global_update_index = index[np.where(u < r)[0]]
                 updated_index_list = updated_index_list + list(global_update_index)
                 for index in global_update_index:
-                    self.dataloader_MHNG_fix.dataset.captions[index] = tokenizer_decode(proposed_w[index])
-                    self.dataloader_MHNG_fix.dataset.vlm_tokens[index] = proposed_w[index].cpu()                 
-                    self.dataloader_MHNG_fix.dataset.gpt_tokens[index] = torch.tensor(self.tokenizer.encode(self.dataloader_MHNG_fix.dataset.captions[index]))
+                    self.dataloader_MHNG_fix.dataset.dataset[index]["caption"] = tokenizer_decode(proposed_w[index])
+                    self.dataloader_MHNG_fix.dataset.dataset[index]["vlm_token"] = proposed_w[index].cpu()
+                    self.dataloader_MHNG_fix.dataset.dataset[index]["gpt_token"] = torch.tensor(self.tokenizer.encode(self.dataloader_MHNG_fix.dataset.dataset[index]["caption"]))
+
+
+                    # self.dataloader_MHNG_fix.dataset.captions[index] = tokenizer_decode(proposed_w[index])
+                    # self.dataloader_MHNG_fix.dataset.vlm_tokens[index] = proposed_w[index].cpu()                 
+                    # self.dataloader_MHNG_fix.dataset.gpt_tokens[index] = torch.tensor(self.tokenizer.encode(self.dataloader_MHNG_fix.dataset.captions[index]))
                 # save mu_Sp, mu_Li, alpha_Sp, alpha_Li, beta_Sp, beta_Li
                 # mu_Sp_list.append(mu_Sp)
                 # mu_Li_list.append(mu_Li)
@@ -240,7 +264,7 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " update text decoder")
         self.ClipCap.train()
         #update_clipcap_derpp(agent.CLIP_Net, agent.ClipCap, agent.tokenizer, finetune_train_dataloader, f"models/{args.save_dir}", epochs = 10, lr=args.lr, train_mode=args.cl_mode, device=device, buffer=buffer, alpha=der_alpha, beta=derpp_beta)
-        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=5e-6, train_mode="DERPP", device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5)
+        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=5e-6, train_mode="DERPP", device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.der_alpha, beta=self.derpp_beta)
         self.ClipCap = updated_clipcap.eval()
     
     def update_text_encoder(self, em_epoch):
