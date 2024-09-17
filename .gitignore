@@ -2,6 +2,8 @@ dataset/
 dataset_images/
 models/
 DownloadConceptualCaptions/
+pacscore/
+exp_eval/
 exp/
 .jpg
 .png

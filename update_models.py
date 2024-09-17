@@ -162,22 +162,21 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
 
             prefix = agent_z[index].to(device)
             
-            
             outputs = clipcap(gpt_token, prefix, gpt_mask)
 
             logits = outputs.logits[:, train_loader_shuffle.dataset.prefix_length - 1: -1]
 
             loss = nnf.cross_entropy(logits.reshape(-1, logits.shape[-1]), gpt_token.flatten(), ignore_index=0)
             loss.backward(retain_graph=True)
-
+            
             # set task index to epoch  
             task_index = torch.tensor([epoch+1] * img.shape[0], device="cpu")
-
+            # Experience replay (ER)
             if train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP":
                 if idx == 0 and epoch == 0:
                     print("reservoir")
                 buffer.add(prefix.detach().cpu(), vlm_token.detach().cpu(), gpt_token.detach().cpu(), gpt_mask.detach().cpu(), logits.detach().cpu(), task_index)
-            
+
             # Dark experience replay (DER)
             if train_mode == "DER" or train_mode == "DERPP":
                 emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(16)
@@ -190,6 +189,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                 # Use Euclidean distance between the logits of the current model and the logits of the model trained on the buffer
                 loss_der = alpha * nnf.mse_loss(outputs_logits, logits)
                 loss_der.backward(retain_graph=True)
+
                 loss_der_list.append(loss_der.detach().cpu().item()/alpha)
                 if idx ==0 and epoch == 0:
                     print("dark knowledge loss", loss_der.item(), "alpha", alpha)
@@ -239,6 +239,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                 clipcap.state_dict(),
                 os.path.join(save_dir, f"{output_prefix}-{epoch:03d}.pt"),
             )
+        s = time.time()
 
     return clipcap
 
@@ -250,10 +251,13 @@ def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epoc
     CLIP_Net.to(device)
     CLIP_Net.eval()
 
-    optimizer = torch.optim.Adam(
-        list(BayesCap_Net.img_BayesCap.parameters())+list(BayesCap_Net.txt_BayesCap.parameters()), 
-        lr=lr
-    )
+    model_params = [{'params': BayesCap_Net.txt_BayesCap.block_mu[2].parameters()},
+                    {'params': BayesCap_Net.txt_BayesCap.block_alpha[2].parameters()},
+                    {'params': BayesCap_Net.txt_BayesCap.block_beta[2].parameters()}]
+
+    # model_params = [{"params": BayesCap_Net.txt_BayesCap.parameters()}]
+
+    optimizer = torch.optim.Adam(model_params, lr=lr)
 
     loss_list = []
     for eph in tqdm(range(epochs)):
@@ -285,11 +289,119 @@ def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epoc
 
             eph_loss += loss.item()
             loss_list.append(loss.item())
-            eph_loss /= len(train_loader)
+
+        eph_loss /= len(train_loader)
         print('Epoch loss: {}'.format(eph_loss))
         
         
         np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), np.array(loss_list)) 
+
+        if save_every > 0 and eph+1 % save_every == 0 or eph == 0 or eph == epochs-1:
+            torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph}.pth"))
+
+    return BayesCap_Net
+
+def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-4, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1e0, T2=5e-2, train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5):
+    
+    BayesCap_Net = BayesCap_Net.to(device)
+    BayesCap_Net.img_BayesCap.eval()
+    BayesCap_Net.txt_BayesCap.train()
+    CLIP_Net.to(device)
+    CLIP_Net.eval()
+
+    model_params = [{'params': BayesCap_Net.txt_BayesCap.block_mu[2].parameters()},
+                    {'params': BayesCap_Net.txt_BayesCap.block_alpha[2].parameters()},
+                    {'params': BayesCap_Net.txt_BayesCap.block_beta[2].parameters()}]
+
+    # model_params = [{"params": BayesCap_Net.txt_BayesCap.parameters()}]
+
+    optimizer = torch.optim.Adam(model_params, lr=lr)
+
+    loss_list = []
+    loss_der_list = []
+    loss_derpp_list = []
+    
+    for eph in tqdm(range(epochs)):
+        eph_loss = 0
+        eph_der_loss = 0
+        eph_derpp_loss = 0
+        BayesCap_Net.train()
+        # with tqdm(train_loader, unit = 'batch') as tepoch:
+        for idx, batch in enumerate(train_loader):
+            # tepoch.set_description('Epoch {}'.format(eph))
+
+            # vlm_token = batch[2].to(device)
+            # index = batch[5]
+            vlm_token = batch["vlm_token"].to(device)
+            index = batch["index"]
+
+            z = agent_z[index].to(device)
+
+            with torch.no_grad():
+                text_emb = CLIP_Net.encode_text(vlm_token).to(device, dtype=torch.float32)
+            
+            # (img_mu, img_alpha, img_beta), (txt_mu, txt_alpha, txt_beta) = BayesCap_Net(xfI, xfT)
+            txt_mu, txt_alpha, txt_beta = BayesCap_Net.txt_BayesCap(text_emb)
+
+            optimizer.zero_grad()
+
+            loss= Cri(txt_mu, txt_alpha, txt_beta, z, T1=T1, T2=T2)
+
+            loss.backward()
+            optimizer.step()
+
+            eph_loss += loss.item()
+            loss_list.append(loss.item())
+            
+            # set task index to epoch
+            task_index = torch.tensor([eph+1] * vlm_token.shape[0], device="cpu")
+            if train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP":
+                if idx == 0 and eph == 0:
+                    print("use reservoir")
+                # buffer.add(prefix.detach().cpu(), vlm_token.detach().cpu(), gpt_token.detach().cpu(), gpt_mask.detach().cpu(), logits.detach().cpu(), task_index)
+                buffer.add(text_emb.detach().cpu(), z.detach().cpu(), txt_mu.detach().cpu(), txt_alpha.detach().cpu(), txt_beta.detach().cpu(), task_index)
+
+            if train_mode == "DER" or train_mode == "DERPP":
+                text_emb, z, txt_mu, txt_alpha, txt_beta = buffer.sample(16)
+                text_emb, z, txt_mu, txt_alpha, txt_beta = text_emb.to(device), z.to(device), txt_mu.to(device), txt_alpha.to(device), txt_beta.to(device)
+
+                txt_mu_pred, txt_alpha_pred, txt_beta_pred = BayesCap_Net.txt_BayesCap(text_emb)
+
+                loss_der = alpha * nnf.mse_loss(txt_mu_pred, txt_mu) + nnf.mse_loss(txt_alpha_pred, txt_alpha) + nnf.mse_loss(txt_beta_pred, txt_beta)
+                loss_der.backward(retain_graph=True)
+
+                if idx == 0 and eph == 0:
+                    print("dark knowledge loss", loss_der.item(), "alpha", alpha)
+
+                eph_der_loss += loss_der.item()                
+                loss_der_list.append(loss_der.item()/alpha)
+                
+
+            if train_mode == "DERPP" or train_mode == "ER" or train_mode == "ER_RS":
+                text_emb, z, txt_mu, txt_alpha, txt_beta = buffer.sample(16)
+                text_emb, z, txt_mu, txt_alpha, txt_beta = text_emb.to(device), z.to(device), txt_mu.to(device), txt_alpha.to(device), txt_beta.to(device)
+
+                txt_mu_pred, txt_alpha_pred, txt_beta_pred = BayesCap_Net.txt_BayesCap(text_emb)
+
+                loss_derpp = beta * Cri(txt_mu_pred, txt_alpha_pred, txt_beta_pred, z, T1=T1, T2=T2)
+                loss_derpp.backward(retain_graph=True)
+
+                if idx == 0 and eph == 0:
+                    print("replay loss", loss_derpp.item(), "beta", beta)
+                
+                eph_derpp_loss += loss_derpp.item()
+                loss_derpp_list.append(loss_derpp.item()/beta)
+
+            optimizer.step()
+
+        eph_loss /= len(train_loader)
+        eph_der_loss /= len(train_loader)
+        eph_derpp_loss /= len(train_loader)
+        print('Epoch loss: {}, der loss: {}, derpp loss: {}'.format(eph_loss, eph_der_loss, eph_derpp_loss))        
+        
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), np.array(loss_list)) 
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_der.npy"), np.array(loss_der_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_derpp.npy"), np.array(loss_derpp_list))
 
         if save_every > 0 and eph+1 % save_every == 0 or eph == 0 or eph == epochs-1:
             torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph}.pth"))
@@ -437,7 +549,6 @@ def pretrain_probvlm(CLIP_Net, train_loader, test_loader, BayesCap_Net, save_dir
     )
     optim_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
 
-    score = 1e8
     loss_list = []
     test_loss_list = []
     for eph in range(epochs):

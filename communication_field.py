@@ -34,6 +34,7 @@ class CommunicationField():
         self.agentB.lora_setting()
 
     def gemcg(self):
+        import time
         # Generalized EM Captioning Game
         self.agentA.perception()
         self.agentB.perception()
@@ -47,12 +48,15 @@ class CommunicationField():
             acceptance_rate_B = []
             for mh_iter in range(self.MH_iter):
                 print("MHCG iteration: ", mh_iter)
-                
+                s = time.time()
                 proposed_w_A = self.agentA.propose()
+                print("proposed_w_A:", time.time()-s)
                 ar_B = self.agentB.judge(proposed_w_A, mh_iter)
                 acceptance_rate_B.append(ar_B)
 
+                s = time.time()
                 proposed_w_B = self.agentB.propose()
+                print("proposed_w_B:", time.time()-s)
                 ar_A = self.agentA.judge(proposed_w_B, mh_iter)
                 acceptance_rate_A.append(ar_A)
             
@@ -84,11 +88,11 @@ if __name__ == '__main__':
     parser.add_argument('--clip_model_type', default="ViT-B/32", choices=('RN50', 'RN101', 'RN50x4', 'ViT-B/32'))
     parser.add_argument('--exp_name', default="debug")
     parser.add_argument('--exp_num', default=1, type=int)
-    parser.add_argument('--MH_iter', default=20, type=int)
+    parser.add_argument('--MH_iter', default=10, type=int)
     parser.add_argument('--EM_iter', default=10, type=int)
     parser.add_argument('--Whole_iter', default=10, type=int)
     parser.add_argument('--td_update_epochs', default=10, type=int)
-    parser.add_argument('--te_update_epochs', default=10, type=int)
+    parser.add_argument('--te_update_epochs', default=3, type=int)
     parser.add_argument('--buffer_size', default=10000, type=int)
     parser.add_argument('--num_workers', default=1, type=int)
     parser.add_argument('--device', default="cuda:0")
@@ -117,7 +121,7 @@ if __name__ == '__main__':
 
         if "debug" in exp_name:
             observation_file = "communication_coco_50_cc3m_50"
-            args.buffer_size = 100
+            args.buffer_size = 20
         else:
             observation_file = f"communication_coco_5000_cc3m_5000"
             # observation_file = "communication_coco_0_cc3m_10000"
@@ -153,6 +157,24 @@ if __name__ == '__main__':
         save_args_to_json(args, filename="args.json", save_dir=f"exp/{exp_name}")
 
         agentA.initialize_td_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
-        agentB.initialize_td_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
+        # agentB.initialize_td_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
+        import time
+        t = time.time()
+        agentA.td_buffer.save_buffer(f"exp/{exp_name}/{agentA.agent_name}/td_buffer.pkl")
+        print("save time:", time.time()-t)
+        
+        t = time.time()
+        torch.save(agentA.td_buffer.image_embed_buffer, f"exp/{exp_name}/{agentA.agent_name}/image_embed_buffer.pt")
+        torch.save(agentA.td_buffer.vlm_token_buffer, f"exp/{exp_name}/{agentA.agent_name}/vlm_token_buffer.pt")
+        torch.save(agentA.td_buffer.gpt_token_buffer, f"exp/{exp_name}/{agentA.agent_name}/gpt_token_buffer.pt")
+        torch.save(agentA.td_buffer.gpt_mask_buffer, f"exp/{exp_name}/{agentA.agent_name}/gpt_mask_buffer.pt")
+        torch.save(agentA.td_buffer.logit_buffer, f"exp/{exp_name}/{agentA.agent_name}/logit_buffer.pt")
+        torch.save(agentA.td_buffer.task_id_buffer, f"exp/{exp_name}/{agentA.agent_name}/task_id_buffer.pt")
 
-        communication_field.gemcg()
+        print("save time:", time.time()-t)
+
+        t = time.time()
+        torch.save({"image_embed_buffer": agentA.td_buffer.image_embed_buffer, "vlm_token_buffer": agentA.td_buffer.vlm_token_buffer, "gpt_token_buffer": agentA.td_buffer.gpt_token_buffer, "gpt_mask_buffer": agentA.td_buffer.gpt_mask_buffer, "logit_buffer": agentA.td_buffer.logit_buffer, "task_id_buffer": agentA.td_buffer.task_id_buffer}, f"exp/{exp_name}/{agentA.agent_name}/buffer.pt")
+
+        print("save time:", time.time()-t)
+        # communication_field.gemcg()

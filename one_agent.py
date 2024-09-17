@@ -110,18 +110,21 @@ class OneAgent(nn.Module):
         self.annealing_beta = annealing_beta
         self.mode = mode
 
-    def image_encoder(self,o): # o: image
+    def image_encoder(self, o): # o: image
         with torch.no_grad():
             z = self.CLIP_Net.encode_image(o)
             mu_img, alpha_img, sigma_img = self.ProbVLM_Net.img_BayesCap(z)
         return mu_img, alpha_img, sigma_img, z
     
-    def text_encoder(self,w): # w: tokenized by CLIP tokenizer
+    def text_encoder(self, w, return_z = False): # w: tokenized by CLIP tokenizer
         with torch.no_grad():
             z = self.CLIP_Net.encode_text(w)
             mu_cap, alpha_cap, sigma_cap = self.ProbVLM_Net.txt_BayesCap(z)
-        return mu_cap, alpha_cap, sigma_cap
-    
+        if return_z:
+            return mu_cap, alpha_cap, sigma_cap, z
+        else:
+            return mu_cap, alpha_cap, sigma_cap
+        
     def text_decoder(self, z): # z: latent vector
         with torch.no_grad():
             prefix_embeds = self.ClipCap.clip_project(z.float()).reshape(z.shape[0], self.prefix_length, -1)
@@ -132,7 +135,6 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " perception")
         z = []
         for batch in self.dataloader_MHNG_fix:
-            # o = batch[0].to(self.device)
             o = batch["image"].to(self.device)
             mu_img, alpha_img, sigma_img, _ = self.image_encoder(o)
             z.append(mu_img)
@@ -142,11 +144,15 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " propose")
         with torch.no_grad():
             proposed_w = []
-            for i, batch in enumerate(self.dataloader_MHNG_fix):
-                # index = batch[-1]
-                index = batch["index"]
+            max_index = len(self.dataloader_MHNG_fix.dataset)
+            batch_size = 100
+            indices = torch.arange(max_index)
+
+            for i in range(0, max_index, batch_size):
+                index = indices[i:i + batch_size]
                 w = self.text_decoder(self.z[index])
                 proposed_w.append(tokenize(w))
+
             proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
             
         return proposed_w
@@ -160,12 +166,6 @@ class OneAgent(nn.Module):
             before_self_w = torch.cat(vlm_token, dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
             # before_self_w = torch.cat(self.dataloader_MHNG_fix.dataset.dataset["vlm_token"], dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
             updated_index_list = []
-            # mu_Sp_list = []
-            # mu_Li_list = []
-            # alpha_Sp_list = []
-            # alpha_Li_list = []
-            # beta_Sp_list = []
-            # beta_Li_list = []
 
             if self.annealing_beta == "None":
                 beta_ratio =1
@@ -181,25 +181,21 @@ class OneAgent(nn.Module):
                 print("annealing_beta is not defined")
                 exit()
             # elif 
-            for i, batch in enumerate(self.dataloader_MHNG_fix):
-                # index = batch[-1]
-                index = batch["index"]
-                
+
+            max_index = len(self.dataloader_MHNG_fix.dataset)
+            batch_size = 100
+            indices = torch.arange(max_index)
+
+            for i in range(0, max_index, batch_size):
+                index = indices[i:i + batch_size]
                 mu_Sp, alpha_Sp, beta_Sp = self.text_encoder(proposed_w[index])
                 mu_Li, alpha_Li, beta_Li = self.text_encoder(before_self_w[index])
-   
-                # annealing beta_Sp
-                
-                # alpha_Sp = alpha_Sp * alpha_ratio
-                # alpha_Li = alpha_Li * alpha_ratio
 
                 beta_Sp = beta_Sp * beta_ratio
-                # beta_Li = beta_Li * beta_ratio
                 
                 # calculate p(z|w,\phi)
                 p_li = -self.GGL(mu_Li, alpha_Li, beta_Li, self.z[index])
                 p_sp = -self.GGL(mu_Sp, alpha_Sp, beta_Sp, self.z[index])
-
                 # calculate acceptance rate r
                 
                 if self.mode == "MHNG":
@@ -210,7 +206,6 @@ class OneAgent(nn.Module):
                     r = np.zeros(len(p_sp))
                 u = np.random.rand(len(r),)
 
-
                 # update w
                 global_update_index = index[np.where(u < r)[0]]
                 updated_index_list = updated_index_list + list(global_update_index)
@@ -218,7 +213,6 @@ class OneAgent(nn.Module):
                     self.dataloader_MHNG_fix.dataset.dataset[index]["caption"] = tokenizer_decode(proposed_w[index])
                     self.dataloader_MHNG_fix.dataset.dataset[index]["vlm_token"] = proposed_w[index].cpu()
                     self.dataloader_MHNG_fix.dataset.dataset[index]["gpt_token"] = torch.tensor(self.tokenizer.encode(self.dataloader_MHNG_fix.dataset.dataset[index]["caption"]))
-
 
                     # self.dataloader_MHNG_fix.dataset.captions[index] = tokenizer_decode(proposed_w[index])
                     # self.dataloader_MHNG_fix.dataset.vlm_tokens[index] = proposed_w[index].cpu()                 
@@ -258,7 +252,24 @@ class OneAgent(nn.Module):
                 task_index = torch.tensor([0] * img.shape[0], device="cpu")
                 self.td_buffer.add(mu_img.detach().cpu(), vlm_token.cpu(), gpt_token.cpu(), gpt_mask.cpu(), logits.detach().cpu(), task_index)
                 if self.td_buffer.num_seen_examples > buffer_size:
-                    break  
+                    break
+    
+    def initialize_te_buffer(self, dataloader, buffer_size):
+        print("Agent", self.agent_name, " initialize buffer")
+        self.te_buffer = ProbVLMBuffer(buffer_size=buffer_size)
+        with torch.no_grad():
+            for batch in dataloader:
+                # def add(self, text_emb, z, txt_mu, txt_alpha, txt_beta, task_ids):
+                img, _, vlm_token, _, _, _  = batch
+                img, vlm_token = img.to(self.device), vlm_token.to(self.device)
+                mu_cap, alpha_cap, sigma_cap, text_emb = self.text_encoder(vlm_token, return_z=True)
+                mu_img, alpha_img, sigma_img, z = self.image_encoder(img)
+
+                # add(self, text_emb, z, txt_mu, txt_alpha, txt_beta, task_ids):
+                self.te_buffer.add(text_emb.detach().cpu(), mu_img.detach().cpu(), mu_cap.detach().cpu(), alpha_cap.detach().cpu(), sigma_cap.detach().cpu(), torch.tensor([0] * text_emb.shape[0], device="cpu"))
+                if self.te_buffer.num_seen_examples > buffer_size:
+                    break
+
 
     def update_text_decoder(self, em_epoch):
         print("Agent", self.agent_name, " update text decoder")

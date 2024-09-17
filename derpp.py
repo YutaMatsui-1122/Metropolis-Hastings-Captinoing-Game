@@ -23,6 +23,7 @@ argparser.add_argument('--cl_mode', default="None", choices=('None','DER', 'DERP
 argparser.add_argument('--reservoir_false', action='store_false', dest='reservoir')
 argparser.add_argument('--speaker_agent', default="None", choices=("None", "coco", "conceptual"))
 argparser.add_argument('--use_generated_caption', action='store_true', dest='use_generated_caption')
+argparser.add_argument('--top_k', action='store_true', dest='top_k')
 
 args = argparser.parse_args()
 
@@ -124,21 +125,17 @@ def clipcap_derpp(CLIP_Net, train_loader, finetune_test_loader,pretrain_test_loa
     loss_derpp_list = []
     finetune_test_loss = []
     pretrain_test_loss = []
-    generated_text = generate_test(agent.ClipCap, clip_model, finetune_test_loader, agent.tokenizer, 10, device = device, prefix_length = 10, temperature = 0.8)
-    print("before training(finetune)", generated_text)
-    generated_text = generate_test(agent.ClipCap, clip_model, pretrain_test_loader, agent.tokenizer, 10, device = device, prefix_length = 10, temperature = 0.8)
-    print("before training(pretrain)", generated_text)
 
     for epoch in range(initial_epoch, epochs):
         print(f">>> Training epoch {epoch}")
         sys.stdout.flush()
         progress = tqdm(total=len(train_loader), desc=output_prefix)
+        epoch_loss = 0
+        epoch_loss_der = 0
+        epoch_loss_derpp = 0
         for idx, batch in enumerate(train_loader):
             model.zero_grad()
             img, caption, vlm_token, gpt_token, gpt_mask, _  = batch
-            print("vlm_token shape", vlm_token.shape)
-            print("gpt_token shape", gpt_token.shape)
-            print("gpt_mask shape", gpt_mask.shape)
             img, gpt_token, gpt_mask = img.to(device), gpt_token.to(device), gpt_mask.to(device)
 
             prefix = CLIP_Net.encode_image(img).to(device, dtype=torch.float32)
@@ -149,6 +146,7 @@ def clipcap_derpp(CLIP_Net, train_loader, finetune_test_loader,pretrain_test_loa
 
             loss = nnf.cross_entropy(logits.reshape(-1, logits.shape[-1]), gpt_token.flatten(), ignore_index=0)
             loss.backward(retain_graph=True)
+            epoch_loss += loss.item()
 
             # set task index to epoch  
             task_index = torch.tensor([epoch+1] * img.shape[0], device="cpu")
@@ -160,23 +158,37 @@ def clipcap_derpp(CLIP_Net, train_loader, finetune_test_loader,pretrain_test_loa
             
             # Dark experience replay (DER)
             if train_mode == "DER" or train_mode == "DERPP":
-                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(train_loader.batch_size // 5)
-                emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
+                if args.top_k:
+                    emb, vlm_token, gpt_token, gpt_mask, logits_value, logits_indices = buffer.sample(train_loader.batch_size)
+                    emb, vlm_token, gpt_token, gpt_mask, logits_value, logits_indices = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits_value.to(device), logits_indices.to(device)
+                else:
+                    emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(train_loader.batch_size)
+                    emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
 
                 outputs = model(gpt_token, emb, gpt_mask)
                 outputs_logits = outputs.logits[:, train_loader.dataset.prefix_length - 1: -1]
-
+                
+                if args.top_k:
+                    buffer_logits = outputs_logits.detach().clone()
+                    buffer_logits = buffer.reconstruct_logits(buffer_logits, logits_value, logits_indices)
+                else:
+                    buffer_logits = logits
                 # Dark experience replay (DER)
                 # Use Euclidean distance between the logits of the current model and the logits of the model trained on the buffer
-                loss_der = alpha * nnf.mse_loss(outputs_logits, logits)
+                loss_der = alpha * nnf.mse_loss(outputs_logits, buffer_logits)
                 loss_der.backward(retain_graph=True)
+                epoch_loss_der += loss_der.item()
                 loss_der_list.append(loss_der.detach().cpu().item()/alpha)
                 if idx ==0 and epoch == 0:
                     print("dark knowledge loss", loss_der.item(), "alpha", alpha)
 
             if train_mode == "DERPP" or train_mode == "ER" or train_mode == "ER_RS":
-                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(train_loader.batch_size //5 )
-                emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
+                if args.top_k:
+                    emb, vlm_token, gpt_token, gpt_mask, logits_value, logits_indices = buffer.sample(train_loader.batch_size)
+                    emb, vlm_token, gpt_token, gpt_mask = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device)
+                else:
+                    emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(train_loader.batch_size)
+                    emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
 
                 outputs = model(gpt_token, emb, gpt_mask)
                 outputs_logits = outputs.logits[:, train_loader.dataset.prefix_length - 1: -1]
@@ -185,6 +197,7 @@ def clipcap_derpp(CLIP_Net, train_loader, finetune_test_loader,pretrain_test_loa
                 # Use cross-entropy loss between the logits of the current model and correct tokens
                 loss_derpp = beta * nnf.cross_entropy(outputs_logits.reshape(-1, outputs_logits.shape[-1]), gpt_token.flatten(), ignore_index=0)
                 loss_derpp.backward(retain_graph=True)
+                epoch_loss_derpp += loss_derpp.item()
                 loss_derpp_list.append(loss_derpp.detach().cpu().item()/beta)
                 if idx ==0 and epoch == 0:
                     print("replay loss", loss_derpp.item(), "beta", beta)
@@ -197,19 +210,15 @@ def clipcap_derpp(CLIP_Net, train_loader, finetune_test_loader,pretrain_test_loa
             progress.update()
 
             loss_list.append(loss.item())
-        generated_text = generate_test(model, clip_model, finetune_test_loader, agent.tokenizer, 10, device = device, prefix_length = 10, temperature = 0.8)
-        print("epoch(finetune)", epoch, generated_text)
-        generated_text = generate_test(model, clip_model, pretrain_test_loader, agent.tokenizer, 10, device = device, prefix_length = 10, temperature = 0.8)
-        print("epoch(pretrain)", epoch, generated_text)
             
         if train_mode != "None":
             print(np.bincount(buffer.get_task_ids().cpu().numpy()))
         if "DERPP" in train_mode:
-            print(f"loss, der, derpp: {loss.item()}, {loss_der.item()/alpha}, {loss_derpp.item()}")
+            print(f"loss, der, derpp: {epoch_loss/len(train_loader)}, {epoch_loss_der/len(train_loader)/alpha}, {epoch_loss_derpp/len(train_loader)/beta}")
         elif "DER" in train_mode:
-            print(f"loss, der: {loss.item()}, {loss_der.item()/alpha}")
+            print(f"loss, der: {epoch_loss/len(train_loader)}, {epoch_loss_der/len(train_loader)/alpha}")   
         elif "ER" in train_mode or "ER_RS" in train_mode:
-            print(f"loss: {loss.item()}")
+            print(f"loss: {epoch_loss/len(train_loader)}")
 
         progress.close()
         np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), np.array(loss_list))
@@ -268,11 +277,14 @@ def clipcap_derpp(CLIP_Net, train_loader, finetune_test_loader,pretrain_test_loa
 buffer = None
 
 if args.cl_mode != "None":
-    buffer_size = 1000
+    buffer_size = 10000
     # if exists buffer, load buffer
 
     # buffer = Buffer(buffer_size)
-    buffer = ClipCapBuffer(buffer_size)
+    if args.top_k:
+        buffer = Top_k_Buffer(buffer_size, top_k=5000)
+    else:
+        buffer = ClipCapBuffer(buffer_size)
     caption_list = []
 
     for batch in tqdm(pretrain_train_dataloader):
@@ -288,29 +300,13 @@ if args.cl_mode != "None":
         caption_list.extend(caption)
         if buffer.num_seen_examples >= buffer_size:
             break
-        
-        # emb, vlm_token, gpt_token, gpt_mask, logits_topk = buffer.sample(10)
-        # print("logit", logits_topk[0])
-        # logits_sorted_topk, indices_topk = torch.sort(logits_topk, descending=True)
-        # print("logit_sorted", logits_sorted_topk[0])
-        # print("indices", indices_topk[0])
-        # print(indices_topk[0][:12])
-        # print("token", [agent.tokenizer.decode(index) for index in gpt_token[0]])
-        # print("output_token1", [agent.tokenizer.decode(index) for index in indices_topk[0][0][:12]])
-        # print("output_token2", [agent.tokenizer.decode(index) for index in indices_topk[0][1][:12]])
-        # print("output_token3", [agent.tokenizer.decode(index) for index in indices_topk[0][2][:12]])
-        # print("output_token4", [agent.tokenizer.decode(index) for index in indices_topk[0][3][:12]])
-        # print("output_token5", [agent.tokenizer.decode(index) for index in indices_topk[0][4][:12]])
-        # print("output_token6", [agent.tokenizer.decode(index) for index in indices_topk[0][5][:12]])
-        # print("output_token7", [agent.tokenizer.decode(index) for index in indices_topk[0][6][:12]])
-
-        # extract indices descending order
-
 
     # save caption_list as text file
     with open(f"models/{args.save_dir}/caption_list.txt", "w") as f:
         for caption in caption_list:
             f.write(caption + "\n")
+    
+    print("buffer size", buffer.num_seen_examples)
 
 CL_mode = args.cl_mode
 

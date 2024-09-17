@@ -19,12 +19,12 @@ from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, Lor
 import copy
 
 # 0.2. Define the device
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 
 # 0.3. Set the experiment name, directory, and the dataset
-exp_name = "GEMCG_first_1"
+exp_name = "gemcg_unified_dataset_coco5000_cc3m5000_agentA05_agentBbeta005_1"
 exp_dir = f"exp/{exp_name}"
-observation_file = "coco_train_dataset_10000"
+observation_file = "communication_coco_5000_cc3m_5000"
 eval_sign = True
 eval_captioning = False
 
@@ -39,7 +39,7 @@ nll_B_sign_B_list_for_plot = []
 nll_sign_A_list_for_plot = []
 nll_sign_B_list_for_plot = []
 
-for em_iter in range(-1,10):
+for em_iter in [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
     print("EM Iteration:", em_iter)
     # Load the trained agents
     agentA = OneAgent(agent_name='A', device=device)
@@ -89,8 +89,8 @@ for em_iter in range(-1,10):
         nll_B_sign_B_pretrain_list = []
         for batch in tqdm.tqdm(observation_dataloader):
             # Set the batch
-            images = batch[0].to(device)
-            index = batch[-1].tolist()
+            images = batch["image"].to(device)
+            index = batch["index"].tolist()
             captionA = shared_sign_A[index]
             captionB = shared_sign_B[index]
 
@@ -150,23 +150,36 @@ for em_iter in range(-1,10):
         # Plot the likelihood of the latent representation given the shared sign
 
         plt.plot(nll_A_sign_A_list_for_plot, label="nll_A_sign_A_pretrain")
+        plt.xlabel("EM Iteration", fontsize=14)
+        plt.ylabel("Log Likelihood", fontsize=14)
         plt.savefig(f"{exp_dir}/nll_A_sign_A_pretrain.png")
         plt.clf()
         plt.plot(nll_B_sign_A_list_for_plot, label="nll_B_sign_A_pretrain")
+        plt.xlabel("EM Iteration", fontsize=14)
+        plt.ylabel("Log Likelihood", fontsize=14)
         plt.savefig(f"{exp_dir}/nll_B_sign_A_pretrain.png")
         plt.clf()
         plt.plot(nll_A_sign_B_list_for_plot, label="nll_A_sign_B_pretrain")
+        plt.xlabel("EM Iteration", fontsize=14)
+        plt.ylabel("Log Likelihood", fontsize=14)
         plt.savefig(f"{exp_dir}/nll_A_sign_B_pretrain.png")
         plt.clf()
         plt.plot(nll_B_sign_B_list_for_plot, label="nll_B_sign_B_pretrain")
+        plt.ylabel("Log Likelihood", fontsize=14)
+        plt.xlabel("EM Iteration", fontsize=14)
         plt.savefig(f"{exp_dir}/nll_B_sign_B_pretrain.png")
         plt.clf()
 
         plt.plot(nll_sign_A_list_for_plot, label="nll_sign_A")
+        plt.xlabel("EM Iteration", fontsize=14)
+        plt.ylabel("Log Likelihood", fontsize=14)
         plt.savefig(f"{exp_dir}/nll_sign_A.png")
         plt.clf()
         plt.plot(nll_sign_B_list_for_plot, label="nll_sign_B")
+        plt.xlabel("EM Iteration", fontsize=14)
+        plt.ylabel("Log Likelihood", fontsize=14)
         plt.savefig(f"{exp_dir}/nll_sign_B.png")
+        plt.clf()
 
         # Save nll_sign_A_list_for_plot and nll_sign_B_list_for_plot in txt files
         with open(f"{exp_dir}/nll_A_sign_A_pretrain_list.txt", "w") as f:

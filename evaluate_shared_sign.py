@@ -5,9 +5,9 @@ from evaluation_metrics import *
 
 device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
-exp_name = "GEMCG_first_1"
+exp_name = "gemcg_unified_dataset_coco5000_cc3m5000_agentA05_agentBbeta005_1"
 exp_dir = f"exp/{exp_name}"
-observation_file = "coco_train_dataset_10000"
+observation_file = "communication_coco_5000_cc3m_5000"
 eval_sign = False
 eval_captioning = True
 em_iter = 10
@@ -30,6 +30,9 @@ ref_agentB_initial_sign = [[captions] for captions in agentB_initial_sign]
 bleu += calculate_bleu_score(agentA_initial_sign, ref_agentB_initial_sign)
 meteor += calculate_meteor_score(agentA_initial_sign, ref_agentB_initial_sign)
 bert_s += calculate_bert_score(agentA_initial_sign, agentB_initial_sign)
+
+print(agentA_initial_sign[:10])
+print(agentB_initial_sign[:10])
 
 bleu += calculate_bleu_score(agentB_initial_sign, ref_agentA_initial_sign)
 meteor += calculate_meteor_score(agentB_initial_sign, ref_agentA_initial_sign)
@@ -77,7 +80,6 @@ for i in range(em_iter):
     print("BLEU:", bleu)
     print("METEOR:", meteor)
     print("BERT_score:", bert_s)
-
     bleu_list.append(bleu)
     meteor_list.append(meteor)
     bert_list.append(bert_s)

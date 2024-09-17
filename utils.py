@@ -1013,6 +1013,97 @@ class ClipCapBuffer:
             return self.num_seen_examples
         else:
             return self.buffer_size
+    
+# text_emb, z, txt_mu, txt_alpha, txt_beta = buffer.sample(16)
+
+class ProbVLMBuffer:
+    def __init__(self, buffer_size: int):
+        self.buffer_size = buffer_size
+        self.num_seen_examples = 0
+
+        # initialize the buffer
+        self.text_emb_buffer = None
+        self.z_buffer = None
+        self.txt_mu_buffer = None
+        self.txt_alpha_buffer = None
+        self.txt_beta_buffer = None
+        self.task_id_buffer = None
+
+
+    def add(self, text_emb, z, txt_mu, txt_alpha, txt_beta, task_ids):
+
+        """
+        Add an example to the buffer.
+
+        Args:
+            image_embed: the image embedding
+            vlm_token: the VLM token
+            gpt_token: the GPT token
+            gpt_mask: the GPT mask
+            logit: the logit
+
+        Returns:
+            None
+        """
+
+        # バッファが初期化されていない場合は初期化
+        if self.text_emb_buffer is None:
+            self.text_emb_buffer = torch.zeros((self.buffer_size, text_emb.shape[1]), dtype = text_emb.dtype)
+            self.z_buffer = torch.zeros((self.buffer_size, z.shape[1]), dtype = z.dtype)
+            self.txt_mu_buffer = torch.zeros((self.buffer_size, txt_mu.shape[1]), dtype = txt_mu.dtype)
+            self.txt_alpha_buffer = torch.zeros((self.buffer_size, txt_alpha.shape[1]), dtype = txt_alpha.dtype)
+            self.txt_beta_buffer = torch.zeros((self.buffer_size, txt_beta.shape[1]), dtype = txt_beta.dtype)
+            self.task_id_buffer = torch.zeros((self.buffer_size), dtype = task_ids.dtype)
+        
+        # バッファの次元と追加するデータの次元が異なることはないため、そのまま追加
+        for i in range(text_emb.shape[0]):
+            if self.num_seen_examples < self.buffer_size:
+                self.text_emb_buffer[self.num_seen_examples] = text_emb[i]
+                self.z_buffer[self.num_seen_examples] = z[i]
+                self.txt_mu_buffer[self.num_seen_examples] = txt_mu[i]
+                self.txt_alpha_buffer[self.num_seen_examples] = txt_alpha[i]
+                self.txt_beta_buffer[self.num_seen_examples] = txt_beta[i]
+                self.task_id_buffer[self.num_seen_examples] = task_ids[i]
+
+            else:
+                idx = reservoir(self.num_seen_examples, self.buffer_size)
+                if idx != -1:
+                    self.text_emb_buffer[idx] = text_emb[i]
+                    self.z_buffer[idx] = z[i]
+                    self.txt_mu_buffer[idx] = txt_mu[i]
+                    self.txt_alpha_buffer[idx] = txt_alpha[i]
+                    self.txt_beta_buffer[idx] = txt_beta[i]
+                    self.task_id_buffer[idx] = task_ids[i]
+            
+            self.num_seen_examples += 1
+
+    def sample(self, batch_size: int):
+        """
+        Sample a batch from the buffer.
+
+        Args:
+            batch_size: the batch size
+
+        Returns:
+            a batch of examples
+        """
+        if self.num_seen_examples < batch_size:
+            return self.text_emb_buffer[:self.num_seen_examples], self.z_buffer[:self.num_seen_examples], self.txt_mu_buffer[:self.num_seen_examples], self.txt_alpha_buffer[:self.num_seen_examples], self.txt_beta_buffer[:self.num_seen_examples]
+        else:
+            idx = np.random.choice(self.buffer_size, batch_size, replace=False)
+            return self.text_emb_buffer[idx], self.z_buffer[idx], self.txt_mu_buffer[idx], self.txt_alpha_buffer[idx], self.txt_beta_buffer[idx]
+    
+    def get_task_ids(self):
+        if self.num_seen_examples < self.buffer_size:
+            return self.task_id_buffer[:self.num_seen_examples]
+        else:
+            return self.task_id_buffer
+        
+    def __len__(self):
+        if self.num_seen_examples < self.buffer_size:
+            return self.num_seen_examples
+        else:
+            return self.buffer_size
         
 
 # Buffer function for Dark Experience Replay
@@ -1063,7 +1154,7 @@ class Top_k_Buffer:
             self.logit_values_buffer = torch.zeros((self.buffer_size, logit.shape[1], self.top_k), dtype = logit.dtype)
             self.logit_indices_buffer = torch.zeros((self.buffer_size, logit.shape[1], self.top_k), dtype = logit.dtype)
             self.logit_num_token = logit.shape[1]
-            self.logit_num_vocab = logit.shape[2]            
+            self.logit_num_vocab = logit.shape[2]
             self.task_id_buffer = torch.zeros((self.buffer_size), dtype = task_ids.dtype)
 
         # バッファの次元と追加するデータの次元が異なる場合は、大きい方に合わせる
@@ -1133,13 +1224,13 @@ class Top_k_Buffer:
             a batch of examples
         """
         idx = np.random.choice(self.buffer_size, batch_size, replace=False)
-        logit = self.reconstruct_logits(self.logit_values_buffer[idx], self.logit_indices_buffer[idx])
+        # logit = self.reconstruct_logits(self.logit_values_buffer[idx], self.logit_indices_buffer[idx])
 
         if self.num_seen_examples < batch_size:
-            return self.image_embed_buffer[:self.num_seen_examples], self.vlm_token_buffer[:self.num_seen_examples], self.gpt_token_buffer[:self.num_seen_examples], self.gpt_mask_buffer[:self.num_seen_examples], logit[:self.num_seen_examples]
+            return self.image_embed_buffer[:self.num_seen_examples], self.vlm_token_buffer[:self.num_seen_examples], self.gpt_token_buffer[:self.num_seen_examples], self.gpt_mask_buffer[:self.num_seen_examples], self.logit_values_buffer[:self.num_seen_examples], self.logit_indices_buffer[:self.num_seen_examples]
         else:
             
-            return self.image_embed_buffer[idx], self.vlm_token_buffer[idx], self.gpt_token_buffer[idx], self.gpt_mask_buffer[idx], logit
+            return self.image_embed_buffer[idx], self.vlm_token_buffer[idx], self.gpt_token_buffer[idx], self.gpt_mask_buffer[idx], self.logit_values_buffer[idx], self.logit_indices_buffer[idx]
 
     def get_task_ids(self):
         if self.num_seen_examples < self.buffer_size:
@@ -1147,13 +1238,10 @@ class Top_k_Buffer:
         else:
             return self.task_id_buffer
     
-    def reconstruct_logits(self, logits_value, logits_index):
-        logits_shape = (logits_value.shape[0], self.logit_num_token, self.logit_num_vocab)
-        # テンソルを作成し、小さい値で初期化（float型で指定）
-        reconstructed_logits = torch.full(logits_shape, self.fill_value, dtype=torch.float)
-        
+    def reconstruct_logits(self, reconstructed_logits, logits_value, logits_index):
+        # logits の top_k の値を予測logitsに上書きする形で復元        
         # バッチサイズとnum_tokenの範囲を生成
-        batch_size, num_tokens = logits_shape[0], logits_shape[1]
+        batch_size, num_tokens = logits_value.shape[0], self.logit_num_token
         b, t = torch.meshgrid(torch.arange(batch_size), torch.arange(num_tokens), indexing='ij')
         
         # scatter_を使用して一括でログを復元
@@ -1235,16 +1323,13 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
 
-    datasize_coco = 0
-    datasize_cc3m = 10000
+    datasize_coco = 5000
+    datasize_cc3m = 5000
     # データセットの初期化
     dataset = UnifiedDataset(data_mode='test', transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
 
-    # save dataset to pickle
-    with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
-        pickle.dump(dataset, f)
-    exit()
-    coco_dataset = CocoDataset(root="dataset/", transform=preprocess, datasize="1000",data_mode='train')
+
+    # coco_dataset = CocoDataset(root="dataset/", transform=preprocess, datasize="1000",data_mode='train')
 
     # DataLoaderの作成
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=8)
@@ -1254,7 +1339,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     # make directory (communication_coco_5000_cc3m_5000)
     os.makedirs(f"dataset_images/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}", exist_ok=True)
-    for i in tqdm(range(len(dataset))):
+    for i in tqdm(range(5000, len(dataset))):
         img = dataset.get_img(i)
         plt.imshow(img)
         plt.savefig(f"dataset_images/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}/image_{i}.png")
