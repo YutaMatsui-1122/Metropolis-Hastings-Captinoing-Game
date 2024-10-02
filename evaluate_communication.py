@@ -95,18 +95,12 @@ for em_iter in [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
             captionB = shared_sign_B[index]
 
             # Calculate the likelihood of the latent representation given the shared sign
-            # nll_A_sign_A = agentA.calculate_p_z_w(images, captionA)
-            # nll_B_sign_A = agentB.calculate_p_z_w(images, captionA)
-            # nll_A_sign_B = agentA.calculate_p_z_w(images, captionB)
-            # nll_B_sign_B = agentB.calculate_p_z_w(images, captionB)
 
             nll_A_sign_A_pretrain = agentA_pretrain.calculate_p_z_w(images, captionA)
             nll_B_sign_A_pretrain = agentB_pretrain.calculate_p_z_w(images, captionA)
             nll_A_sign_B_pretrain = agentA_pretrain.calculate_p_z_w(images, captionB)
             nll_B_sign_B_pretrain = agentB_pretrain.calculate_p_z_w(images, captionB)
 
-            # nll_sign_A_list.append(nll_A_sign_A + nll_B_sign_A)
-            # nll_sign_B_list.append(nll_A_sign_B + nll_B_sign_B)
             nll_A_sign_A_pretrain_list.append(nll_A_sign_A_pretrain)
             nll_B_sign_A_pretrain_list.append(nll_B_sign_A_pretrain)
             nll_A_sign_B_pretrain_list.append(nll_A_sign_B_pretrain)

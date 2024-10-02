@@ -243,7 +243,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
 
     return clipcap
 
-def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-4, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1e0, T2=5e-2, cross_modal_lambda=1e-4):
+def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-4, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=1e-4):
     
     BayesCap_Net = BayesCap_Net.to(device)
     BayesCap_Net.img_BayesCap.eval()
@@ -301,7 +301,7 @@ def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epoc
 
     return BayesCap_Net
 
-def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-4, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1e0, T2=5e-2, train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5):
+def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-4, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=1, train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5, pretrain_test_loader = None, fine_tune_test_loader = None):
     
     BayesCap_Net = BayesCap_Net.to(device)
     BayesCap_Net.img_BayesCap.eval()
@@ -309,29 +309,42 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
     CLIP_Net.to(device)
     CLIP_Net.eval()
 
+    # text_emb, z, txt_mu, txt_alpha, txt_beta = buffer.sample(16)
+    # text_emb, z, txt_mu, txt_alpha, txt_beta = text_emb.to(device), z.to(device), txt_mu.to(device), txt_alpha.to(device), txt_beta.to(device)
+
+    # txt_mu_pred, txt_alpha_pred, txt_beta_pred = BayesCap_Net.txt_BayesCap(text_emb)
+    # print(txt_mu[0][:10], txt_mu_pred[0][:10])
+    # print(txt_alpha[0][:10], txt_alpha_pred[0][:10])
+    # print(txt_beta[0][:10], txt_beta_pred[0][:10])
+    # print(nnf.mse_loss(txt_mu_pred, txt_mu) + nnf.mse_loss(txt_alpha_pred, txt_alpha) + nnf.mse_loss(txt_beta_pred, txt_beta))
+
     model_params = [{'params': BayesCap_Net.txt_BayesCap.block_mu[2].parameters()},
                     {'params': BayesCap_Net.txt_BayesCap.block_alpha[2].parameters()},
                     {'params': BayesCap_Net.txt_BayesCap.block_beta[2].parameters()}]
+
+    # use all parameters in BayesCap_Net.txt_BayesCap
+    # model_params = [{"params": BayesCap_Net.txt_BayesCap.parameters()}]
 
     # model_params = [{"params": BayesCap_Net.txt_BayesCap.parameters()}]
 
     optimizer = torch.optim.Adam(model_params, lr=lr)
 
+    # save before training model
+    torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-0.pth"))
+
     loss_list = []
     loss_der_list = []
     loss_derpp_list = []
+    loss_pretrain_test_list = []
+    loss_fine_tune_test_list = []
     
-    for eph in tqdm(range(epochs)):
+    # for eph in tqdm(range(epochs)):
+    for eph in tqdm(range(1, epochs+1)):
         eph_loss = 0
         eph_der_loss = 0
         eph_derpp_loss = 0
         BayesCap_Net.train()
-        # with tqdm(train_loader, unit = 'batch') as tepoch:
         for idx, batch in enumerate(train_loader):
-            # tepoch.set_description('Epoch {}'.format(eph))
-
-            # vlm_token = batch[2].to(device)
-            # index = batch[5]
             vlm_token = batch["vlm_token"].to(device)
             index = batch["index"]
 
@@ -343,9 +356,21 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
             # (img_mu, img_alpha, img_beta), (txt_mu, txt_alpha, txt_beta) = BayesCap_Net(xfI, xfT)
             txt_mu, txt_alpha, txt_beta = BayesCap_Net.txt_BayesCap(text_emb)
 
+            if idx == 0:
+                print("text_emb", text_emb[0][:10])
+                print("txt_mu", txt_mu[0][:10])
+                print("txt_alpha", txt_alpha[0][:10])
+                print("txt_beta", txt_beta[0][:10])
+                print("z", z[0][:10])
+
             optimizer.zero_grad()
 
-            loss= Cri(txt_mu, txt_alpha, txt_beta, z, T1=T1, T2=T2)
+            # loss_i = Cri(txt_mu, txt_alpha, txt_beta, z, T1=T1, T2=T2)
+            # loss_reg = Cri(txt_mu, txt_alpha, txt_beta, text_emb, T1=T1, T2=T2)
+            loss_i = Cri(txt_mu, txt_alpha, txt_beta, z, T1=0, T2=1)
+            loss_reg = Cri(txt_mu, txt_alpha, txt_beta, text_emb, T1=0, T2=1)
+
+            loss =  loss_i + cross_modal_lambda *  loss_reg
 
             loss.backward()
             optimizer.step()
@@ -371,6 +396,9 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
                 loss_der.backward(retain_graph=True)
 
                 if idx == 0 and eph == 0:
+                    print("mu", txt_mu[0][:10], txt_mu_pred[0][:10])
+                    print("alpha", txt_alpha[0][:10], txt_alpha_pred[0][:10])
+                    print("beta", txt_beta[0][:10], txt_beta_pred[0][:10])
                     print("dark knowledge loss", loss_der.item(), "alpha", alpha)
 
                 eph_der_loss += loss_der.item()                
@@ -383,7 +411,10 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
 
                 txt_mu_pred, txt_alpha_pred, txt_beta_pred = BayesCap_Net.txt_BayesCap(text_emb)
 
-                loss_derpp = beta * Cri(txt_mu_pred, txt_alpha_pred, txt_beta_pred, z, T1=T1, T2=T2)
+                loss_derpp_i = Cri(txt_mu_pred, txt_alpha_pred, txt_beta_pred, z, T1=0, T2=1)
+                loss_derpp_reg = Cri(txt_mu_pred, txt_alpha_pred, txt_beta_pred, text_emb, T1=0, T2=1)
+
+                loss_derpp = beta * (loss_derpp_i + cross_modal_lambda * loss_derpp_reg)
                 loss_derpp.backward(retain_graph=True)
 
                 if idx == 0 and eph == 0:
@@ -391,7 +422,6 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
                 
                 eph_derpp_loss += loss_derpp.item()
                 loss_derpp_list.append(loss_derpp.item()/beta)
-
             optimizer.step()
 
         eph_loss /= len(train_loader)
@@ -403,8 +433,54 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_der.npy"), np.array(loss_der_list))
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_derpp.npy"), np.array(loss_derpp_list))
 
-        if save_every > 0 and eph+1 % save_every == 0 or eph == 0 or eph == epochs-1:
+        if (eph+1) % save_every == 0 or eph == 0 or eph == epochs-1:
             torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph}.pth"))
+
+        if pretrain_test_loader is not None:
+            print(f">>> Evaluating epoch {eph} <<<")
+            BayesCap_Net.eval()
+            test_loss = 0
+            with torch.no_grad():
+                for idx, batch in tqdm(enumerate(pretrain_test_loader), total=len(pretrain_test_loader), desc="eval"):
+                    vlm_token = batch[2].to(device)
+                    index = batch[5]
+                    z = agent_z[index].to(device)
+                    print("vlm_token", vlm_token.cpu().numpy().shape)
+                    text_emb = CLIP_Net.encode_text(vlm_token).to(device, dtype=torch.float32)
+
+                    txt_mu, txt_alpha, txt_beta = BayesCap_Net.txt_BayesCap(text_emb)
+
+                    loss = Cri(txt_mu, txt_alpha, txt_beta, z, T1=T1, T2=T2)
+                    test_loss += loss.item()
+
+            test_loss /= len(pretrain_test_loader)
+            loss_pretrain_test_list.append(test_loss)
+            print(f"Test Loss: {test_loss}")
+
+            np.save(os.path.join(save_dir, f"{output_prefix}_loss_pretrain_test.npy"), np.array(loss_pretrain_test_list))
+        
+        if fine_tune_test_loader is not None:
+            print(f">>> Evaluating epoch {eph} <<<")
+            BayesCap_Net.eval()
+            test_loss = 0
+            with torch.no_grad():
+                for idx, batch in tqdm(enumerate(fine_tune_test_loader), total=len(fine_tune_test_loader), desc="eval"):
+                    vlm_token = batch[2].to(device)
+                    index = batch[5]
+                    z = agent_z[index].to(device)
+
+                    text_emb = CLIP_Net.encode_text(vlm_token).to(device, dtype=torch.float32)
+
+                    txt_mu, txt_alpha, txt_beta = BayesCap_Net.txt_BayesCap(text_emb)
+
+                    loss = Cri(txt_mu, txt_alpha, txt_beta, z, T1=T1, T2=T2)
+                    test_loss += loss.item()
+
+            test_loss /= len(fine_tune_test_loader)
+            loss_fine_tune_test_list.append(test_loss)
+            print(f"Test Loss: {test_loss}")
+
+            np.save(os.path.join(save_dir, f"{output_prefix}_loss_fine_tune_test.npy"), np.array(loss_fine_tune_test_list))
 
     return BayesCap_Net
 
@@ -533,9 +609,8 @@ def pretrain_clipcap(CLIP_Net, train_loader, test_loader, model, save_dir, epoch
 
     return model
 
-def pretrain_probvlm(CLIP_Net, train_loader, test_loader, BayesCap_Net, save_dir, epochs, lr = 1e-4, output_prefix = "probvlm", save_every = 1,Cri = TempCombLoss(), T1=1e0, T2=5e-2, cross_modal_lambda=1e-4, train_mode = "pretain"):
+def pretrain_probvlm(CLIP_Net, train_loader, BayesCap_Net, save_dir, epochs, device, lr=1e-4, output_prefix="probvlm", Cri=TempCombLoss(), T1=1e0, T2=5e-2, cross_modal_lambda_init=1e-4, cross_modal_lambda_final=1.0, start_annealing_epoch=5, train_mode="pretain"):
     
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     BayesCap_Net = BayesCap_Net.to(device)
     BayesCap_Net.img_BayesCap.train()
     BayesCap_Net.txt_BayesCap.train()
@@ -544,26 +619,141 @@ def pretrain_probvlm(CLIP_Net, train_loader, test_loader, BayesCap_Net, save_dir
 
     print("probvlm lr:", lr)
     optimizer = torch.optim.Adam(
-        list(BayesCap_Net.img_BayesCap.parameters())+list(BayesCap_Net.txt_BayesCap.parameters()), 
+        list(BayesCap_Net.img_BayesCap.parameters()) + list(BayesCap_Net.txt_BayesCap.parameters()), 
         lr=lr
     )
     optim_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
 
     loss_list = []
-    test_loss_list = []
+    loss_i_list = []
+    loss_t_list = []
+    loss_i2t_list = []
+    loss_t2i_list = []
+
     for eph in range(epochs):
         eph_loss = 0
+        eph_loss_i = 0
+        eph_loss_t = 0
+        eph_loss_i2t = 0
+        eph_loss_t2i = 0
         BayesCap_Net.train()
-        # with tqdm(train_loader, unit = 'batch') as tepoch:
-        for (idx, batch) in tqdm(enumerate(train_loader)):
-            # tepoch.set_description('Epoch {}'.format(eph))
-            ##
+
+        # Anneal cross_modal_lambda linearly after start_annealing_epoch
+        if eph < start_annealing_epoch:
+            cross_modal_lambda = cross_modal_lambda_init
+        else:
+            cross_modal_lambda = cross_modal_lambda_init + (cross_modal_lambda_final - cross_modal_lambda_init) * ((eph - start_annealing_epoch) / (epochs - start_annealing_epoch))
+
+        with tqdm(total=len(train_loader), desc=f"Epoch {eph}") as pbar:
+            for (idx, batch) in enumerate(train_loader):
+                # xI, xT = batch[0].to(device), batch[2].to(device)
+                xI, xT = batch["image"].to(device), batch["vlm_token"].to(device)
+
+                with torch.no_grad():
+                    xfI = CLIP_Net.encode_image(xI)
+                    xfT = CLIP_Net.encode_text(xT)
+
+                (img_mu, img_alpha, img_beta), (txt_mu, txt_alpha, txt_beta) = BayesCap_Net(xfI, xfT)
+
+                optimizer.zero_grad()
+                loss_i = Cri(img_mu, img_alpha, img_beta, xfI, T1=T1, T2=T2)
+                loss_t = Cri(txt_mu, txt_alpha, txt_beta, xfT, T1=T1, T2=T2)
+
+                loss_i2t = Cri(img_mu, img_alpha, img_beta, xfT, T1=T1, T2=T2)
+                loss_t2i = Cri(txt_mu, txt_alpha, txt_beta, xfI, T1=T1, T2=T2)
+
+                loss = loss_i + loss_t + cross_modal_lambda * (loss_i2t + loss_t2i)
+
+                loss.backward()
+                optimizer.step()
+
+                eph_loss += loss.item()
+                eph_loss_i += loss_i.item()
+                eph_loss_t += loss_t.item()
+                eph_loss_i2t += loss_i2t.item()
+                eph_loss_t2i += loss_t2i.item()
+
+                # tqdmのpostfixにloss_iとloss_tを表示
+                pbar.set_postfix({'loss_i': f'{loss_i.item():.1f}', 'loss_t': f'{loss_t.item():.1f}'})
+
+                if idx % 500 == 0:
+                    torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}_latest.pth"))
+                    np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), loss_list)
+                optim_scheduler.step()
+                pbar.update(1)
+
+        print(f'Epoch {eph} - cross_modal_lambda: {cross_modal_lambda}, Epoch loss: {eph_loss}, loss_i: {eph_loss_i}, loss_t: {eph_loss_t}, loss_i2t: {eph_loss_i2t}, loss_t2i: {eph_loss_t2i}')
+
+        eph_loss /= len(train_loader.dataset)
+        eph_loss_i /= len(train_loader.dataset)
+        eph_loss_t /= len(train_loader.dataset)
+        eph_loss_i2t /= len(train_loader.dataset)
+        eph_loss_t2i /= len(train_loader.dataset)
+
+        loss_list.append(eph_loss)
+        loss_i_list.append(eph_loss_i)
+        loss_t_list.append(eph_loss_t)
+        loss_i2t_list.append(eph_loss_i2t)
+        loss_t2i_list.append(eph_loss_t2i)
+
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), np.array(loss_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_i.npy"), np.array(loss_i_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_t.npy"), np.array(loss_t_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_i2t.npy"), np.array(loss_i2t_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_t2i.npy"), np.array(loss_t2i_list))
+
+        if eph < 5 or eph % 3 == 0 or eph == epochs - 1:
+            torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph}.pth"))
+
+    return BayesCap_Net
+
+def pretrain_probvlm_step_anneal(CLIP_Net, train_loader, BayesCap_Net, save_dir, epochs, device, lr=1e-4, output_prefix="probvlm", Cri=TempCombLoss(), T1=1e0, T2=5e-2, cross_modal_lambda_init=1e-4, cross_modal_lambda_final=1.0, annealing_epoch=10, train_mode="pretrain"):
+    
+    BayesCap_Net = BayesCap_Net.to(device)
+    BayesCap_Net.img_BayesCap.train()
+    BayesCap_Net.txt_BayesCap.train()
+    CLIP_Net.to(device)
+    CLIP_Net.eval()
+
+    print("probvlm lr:", lr)
+    optimizer = torch.optim.Adam(
+        list(BayesCap_Net.img_BayesCap.parameters()) + list(BayesCap_Net.txt_BayesCap.parameters()), 
+        lr=lr
+    )
+    optim_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+
+    loss_list = []
+    loss_i_list = []
+    loss_t_list = []
+    loss_i2t_list = []
+    loss_t2i_list = []
+
+    # ステップごとの増加量とエポックあたりのステップ数を計算
+    step_size = (cross_modal_lambda_final - cross_modal_lambda_init) / annealing_epoch
+    epochs_per_step = epochs // annealing_epoch
+
+    for eph in range(epochs):
+        eph_loss = 0
+        eph_loss_i = 0
+        eph_loss_t = 0
+        eph_loss_i2t = 0
+        eph_loss_t2i = 0
+        BayesCap_Net.train()
+
+        # ステップ関数によるアニーリング
+        step_increment = eph // epochs_per_step
+        cross_modal_lambda = cross_modal_lambda_init + step_increment * step_size
+        cross_modal_lambda = min(cross_modal_lambda, cross_modal_lambda_final)  # ファイナルラムダを超えないように
+        # cross_modal_lambda の値を確認したい場合は以下をコメント解除
+        # print(f"Epoch {eph+1}/{epochs}, cross_modal_lambda: {cross_modal_lambda}")
+
+        for (idx, batch) in enumerate(tqdm(train_loader)):
             xI, xT = batch[0].to(device), batch[2].to(device)
 
             with torch.no_grad():
                 xfI = CLIP_Net.encode_image(xI)
                 xfT = CLIP_Net.encode_text(xT)
-            
+
             (img_mu, img_alpha, img_beta), (txt_mu, txt_alpha, txt_beta) = BayesCap_Net(xfI, xfT)
 
             optimizer.zero_grad()
@@ -579,48 +769,37 @@ def pretrain_probvlm(CLIP_Net, train_loader, test_loader, BayesCap_Net, save_dir
             optimizer.step()
 
             eph_loss += loss.item()
-            loss_list.append(loss.item())
-            # tepoch.set_postfix(loss=loss.item())
-            
+            eph_loss_i += loss_i.item()
+            eph_loss_t += loss_t.item()
+            eph_loss_i2t += loss_i2t.item()
+            eph_loss_t2i += loss_t2i.item()
+
             if idx % 500 == 0:
                 torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}_latest.pth"))
                 np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), loss_list)
-            
-            eph_loss /= len(train_loader)
             optim_scheduler.step()
-        print('Epoch loss: {}'.format(eph_loss))
-        
 
-        if "MHNG" in train_mode:
-            torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-{train_mode}.pth"))
+        print(f'Epoch {eph+1} - cross_modal_lambda: {cross_modal_lambda}, Epoch loss: {eph_loss}, loss_i: {eph_loss_i}, loss_t: {eph_loss_t}, loss_i2t: {eph_loss_i2t}, loss_t2i: {eph_loss_t2i}')
 
-    
-        elif train_mode == "pretrain":
-            
-            BayesCap_Net.eval()
-            test_loss = 0
-            for idx, batch in tqdm(enumerate(test_loader), total=len(test_loader), desc="eval"):
-                xI, xT = batch[0].to(device), batch[2].to(device)
+        eph_loss /= len(train_loader)
+        eph_loss_i /= len(train_loader)
+        eph_loss_t /= len(train_loader)
+        eph_loss_i2t /= len(train_loader)
+        eph_loss_t2i /= len(train_loader)
 
-                with torch.no_grad():
-                    xfI = CLIP_Net.encode_image(xI)
-                    xfT = CLIP_Net.encode_text(xT)
+        loss_list.append(eph_loss)
+        loss_i_list.append(eph_loss_i)
+        loss_t_list.append(eph_loss_t)
+        loss_i2t_list.append(eph_loss_i2t)
+        loss_t2i_list.append(eph_loss_t2i)
 
-                (img_mu, img_alpha, img_beta), (txt_mu, txt_alpha, txt_beta) = BayesCap_Net(xfI, xfT)
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), np.array(loss_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_i.npy"), np.array(loss_i_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_t.npy"), np.array(loss_t_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_i2t.npy"), np.array(loss_i2t_list))
+        np.save(os.path.join(save_dir, f"{output_prefix}_loss_t2i.npy"), np.array(loss_t2i_list))
 
-                loss_i = Cri(img_mu, img_alpha, img_beta, xfI, T1=T1, T2=T2)
-                loss_t = Cri(txt_mu, txt_alpha, txt_beta, xfT, T1=T1, T2=T2)
+        if eph < 5 or eph % 3 == 0 or eph == epochs - 1:
+            torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph+1}.pth"))
 
-                loss_i2t = Cri(img_mu, img_alpha, img_beta, xfT, T1=T1, T2=T2)
-                loss_t2i = Cri(txt_mu, txt_alpha, txt_beta, xfI, T1=T1, T2=T2)
-
-                loss = loss_i + loss_t + cross_modal_lambda * (loss_i2t + loss_t2i)
-
-                test_loss += loss.item()
-
-            test_loss /= len(test_loader)
-            test_loss_list.append(test_loss)
-            np.save(os.path.join(save_dir, f"{output_prefix}_test_loss.npy"), test_loss_list)
-            torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-{eph:03d}.pth"))
-        
     return BayesCap_Net

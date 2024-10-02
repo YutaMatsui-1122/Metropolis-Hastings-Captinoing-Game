@@ -19,8 +19,6 @@ class CommunicationField():
         os.makedirs(f"exp/{self.exp_name}", exist_ok=True)        
         os.makedirs(f"exp/{self.exp_name}/{self.agentA.agent_name}", exist_ok=True)
         os.makedirs(f"exp/{self.exp_name}/{self.agentB.agent_name}", exist_ok=True)
-
-        
     
     def communication_field_setup(self,dataloader_MHNG_fix_A, dataloader_MHNG_shuffle_A, dataloader_MHNG_fix_B, dataloader_MHNG_shuffle_B, annealing="None", mode="MHNG"):
         self.agentA.communication_field_setup(dataloader_MHNG_fix_A, dataloader_MHNG_shuffle_A, self.MH_iter, annealing, mode)
@@ -32,9 +30,23 @@ class CommunicationField():
         self.agentA.lora_setting()
         self.agentB.initialize_sign()
         self.agentB.lora_setting()
-
-    def gemcg(self):
+    
+    def only_judge(self): # time test
         import time
+        self.agentA.perception()
+        self.agentB.perception()
+
+        for em_iter in range(self.EM_iter):
+            print("EM iteration: ", em_iter)
+            
+            for mh_iter in range(self.MH_iter):
+                print("MHCG iteration: ", mh_iter)
+                proposed_w_A = self.agentA.propose()
+                self.agentB.judge(proposed_w_A, mh_iter)
+                proposed_w_B = self.agentB.propose()
+                self.agentA.judge(proposed_w_B, mh_iter)
+                
+    def gemcg(self):
         # Generalized EM Captioning Game
         self.agentA.perception()
         self.agentB.perception()
@@ -48,17 +60,29 @@ class CommunicationField():
             acceptance_rate_B = []
             for mh_iter in range(self.MH_iter):
                 print("MHCG iteration: ", mh_iter)
-                s = time.time()
                 proposed_w_A = self.agentA.propose()
-                print("proposed_w_A:", time.time()-s)
                 ar_B = self.agentB.judge(proposed_w_A, mh_iter)
                 acceptance_rate_B.append(ar_B)
 
-                s = time.time()
                 proposed_w_B = self.agentB.propose()
-                print("proposed_w_B:", time.time()-s)
                 ar_A = self.agentA.judge(proposed_w_B, mh_iter)
                 acceptance_rate_A.append(ar_A)
+
+                # transform the sign to the text
+                proposed_caption_A = []
+                proposed_caption_B = []
+                for i in range(len(proposed_w_A)):
+                    # proposed_caption_A = tokenizer_decode(proposed_w_A[i])
+                    proposed_caption_A.append(tokenizer_decode(proposed_w_A[i]))
+                    proposed_caption_B.append(tokenizer_decode(proposed_w_B[i]))
+
+                # save proposed sign with pandas
+                df_A = pd.DataFrame(proposed_caption_A)
+                df_B = pd.DataFrame(proposed_caption_B)
+                df_A.to_csv(f"{self.agentA.save_dir}/proposed_sign_{em_iter}_{mh_iter}.csv")
+                df_B.to_csv(f"{self.agentB.save_dir}/proposed_sign_{em_iter}_{mh_iter}.csv")
+                self.agentA.save_sign(status=f"EM_{em_iter}_MH_{mh_iter}")
+                self.agentB.save_sign(status=f"EM_{em_iter}_MH_{mh_iter}")
             
             # save the acceptance rate with txt file
             with open(f"{self.agentA.save_dir}/acceptance_rate_{em_iter}.txt", "w") as f:
@@ -104,7 +128,18 @@ if __name__ == '__main__':
     parser.add_argument('--agentB_beta', default=0.5, type=float)   
     parser.add_argument('--annealing', default="None")
     parser.add_argument('--mode', default="MHNG")
+    parser.add_argument('--import_args', default="None") # import args from saved json file for same configuration
     args = parser.parse_args()
+
+    exp_name = args.exp_name
+
+    if args.import_args != "None":
+        with open(f"exp/{args.import_args}/args.json", "r") as f:
+            import_args = json.load(f)
+        args = argparse.Namespace(**import_args)
+        args.exp_name = exp_name # overwrite exp_name
+    
+    print("expertiment name:", exp_name)
 
     for i in range(1, args.exp_num+1):
         print("exp:", i)
@@ -147,9 +182,9 @@ if __name__ == '__main__':
         coco_pretrain_loader = torch.utils.data.DataLoader(coco_pretrain_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
         coco_test_loader_fix_A = torch.utils.data.DataLoader(observationA_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-        coco_test_loader_shuffle_A = torch.utils.data.DataLoader(observationA_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+        coco_test_loader_shuffle_A = torch.utils.data.DataLoader(observationA_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
         coco_test_loader_fix_B = torch.utils.data.DataLoader(observationB_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-        coco_test_loader_shuffle_B = torch.utils.data.DataLoader(observationB_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+        coco_test_loader_shuffle_B = torch.utils.data.DataLoader(observationB_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
         communication_field = CommunicationField(exp_name, agentA, agentB, EM_iter=args.EM_iter, MH_iter=args.MH_iter, Whole_iter=args.Whole_iter)
         communication_field.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, coco_test_loader_fix_B, coco_test_loader_shuffle_B, annealing=args.annealing, mode=args.mode)
@@ -157,24 +192,7 @@ if __name__ == '__main__':
         save_args_to_json(args, filename="args.json", save_dir=f"exp/{exp_name}")
 
         agentA.initialize_td_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
-        # agentB.initialize_td_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
-        import time
-        t = time.time()
-        agentA.td_buffer.save_buffer(f"exp/{exp_name}/{agentA.agent_name}/td_buffer.pkl")
-        print("save time:", time.time()-t)
-        
-        t = time.time()
-        torch.save(agentA.td_buffer.image_embed_buffer, f"exp/{exp_name}/{agentA.agent_name}/image_embed_buffer.pt")
-        torch.save(agentA.td_buffer.vlm_token_buffer, f"exp/{exp_name}/{agentA.agent_name}/vlm_token_buffer.pt")
-        torch.save(agentA.td_buffer.gpt_token_buffer, f"exp/{exp_name}/{agentA.agent_name}/gpt_token_buffer.pt")
-        torch.save(agentA.td_buffer.gpt_mask_buffer, f"exp/{exp_name}/{agentA.agent_name}/gpt_mask_buffer.pt")
-        torch.save(agentA.td_buffer.logit_buffer, f"exp/{exp_name}/{agentA.agent_name}/logit_buffer.pt")
-        torch.save(agentA.td_buffer.task_id_buffer, f"exp/{exp_name}/{agentA.agent_name}/task_id_buffer.pt")
+        agentB.initialize_td_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
 
-        print("save time:", time.time()-t)
-
-        t = time.time()
-        torch.save({"image_embed_buffer": agentA.td_buffer.image_embed_buffer, "vlm_token_buffer": agentA.td_buffer.vlm_token_buffer, "gpt_token_buffer": agentA.td_buffer.gpt_token_buffer, "gpt_mask_buffer": agentA.td_buffer.gpt_mask_buffer, "logit_buffer": agentA.td_buffer.logit_buffer, "task_id_buffer": agentA.td_buffer.task_id_buffer}, f"exp/{exp_name}/{agentA.agent_name}/buffer.pt")
-
-        print("save time:", time.time()-t)
-        # communication_field.gemcg()
+        communication_field.gemcg()
+        # communication_field.only_judge()

@@ -638,7 +638,7 @@ def generate2(
         prompt=None,
         embed=None,
         entry_count=1,
-        entry_length=67,  # maximum number of words
+        entry_length=40,  # maximum number of words
         top_p=0.8,
         temperature=1.,
         stop_token: str = '.',
@@ -702,7 +702,7 @@ def generate_batch(
     model,
     tokenizer,
     embed=None,
-    entry_length=67,  # maximum number of words
+    entry_length=40,  # maximum number of words
     top_p=0.8,
     temperature=1.0,
     stop_token='.'
@@ -748,7 +748,6 @@ def generate_batch(
             # tokensのすべての行にstop_token_idがあるときに終了
             if (tokens == stop_token_id).any(dim=1).all():
                 break
-
             # entry_length - 2回目のループで終了トークンが見つからない場合
             if i == entry_length - 2:
                 tokens = torch.cat((tokens, torch.full((tokens.shape[0], 1), stop_token_id, dtype=tokens.dtype).to(device)), dim=1)
@@ -1036,12 +1035,11 @@ class ProbVLMBuffer:
         Add an example to the buffer.
 
         Args:
-            image_embed: the image embedding
-            vlm_token: the VLM token
-            gpt_token: the GPT token
-            gpt_mask: the GPT mask
-            logit: the logit
-
+            text_emb: the text embedding
+            z: the latent vector
+            txt_mu: the mean of the text embedding
+            txt_alpha: the alpha of the text embedding
+            txt_beta: the beta of the text embedding
         Returns:
             None
         """
@@ -1323,11 +1321,19 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
 
-    datasize_coco = 5000
-    datasize_cc3m = 5000
+    datasize_coco = 1000
+    datasize_cc3m = 1000
+
     # データセットの初期化
     dataset = UnifiedDataset(data_mode='test', transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
+    print("Dataset length:", len(dataset))
 
+    # save dataset
+    # with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+    with open(f"dataset/dataset_cache/test_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+        pickle.dump(dataset, f)
+
+    exit()
 
     # coco_dataset = CocoDataset(root="dataset/", transform=preprocess, datasize="1000",data_mode='train')
 

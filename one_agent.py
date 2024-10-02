@@ -33,7 +33,7 @@ class OneAgent(nn.Module):
         super().__init__()
         self.agent_name = agent_name
         self.device = device
-        self.ProbVLM_Net = BayesCap_for_CLIP(inp_dim=512, out_dim=512, hid_dim=256, num_layers=3, p_drop=0.05,)
+        self.ProbVLM_Net = BayesCap_for_CLIP(inp_dim=512, out_dim=512, hid_dim=256, num_layers=3, p_drop=0.01,)
         self.ProbVLM_Net.eval()
         self.CLIP_Net, self.preprocess = clip.load("ViT-B/32", device = self.device)
         self.CLIP_Net = self.CLIP_Net.float()
@@ -145,14 +145,14 @@ class OneAgent(nn.Module):
         with torch.no_grad():
             proposed_w = []
             max_index = len(self.dataloader_MHNG_fix.dataset)
-            batch_size = 100
+            batch_size = 200
             indices = torch.arange(max_index)
 
             for i in range(0, max_index, batch_size):
                 index = indices[i:i + batch_size]
-                w = self.text_decoder(self.z[index])
+                z = self.z[index]
+                w = self.text_decoder(z)
                 proposed_w.append(tokenize(w))
-
             proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
             
         return proposed_w
@@ -263,10 +263,10 @@ class OneAgent(nn.Module):
                 img, _, vlm_token, _, _, _  = batch
                 img, vlm_token = img.to(self.device), vlm_token.to(self.device)
                 mu_cap, alpha_cap, sigma_cap, text_emb = self.text_encoder(vlm_token, return_z=True)
-                mu_img, alpha_img, sigma_img, z = self.image_encoder(img)
+                mu_img, _, _, _ = self.image_encoder(img)
 
                 # add(self, text_emb, z, txt_mu, txt_alpha, txt_beta, task_ids):
-                self.te_buffer.add(text_emb.detach().cpu(), mu_img.detach().cpu(), mu_cap.detach().cpu(), alpha_cap.detach().cpu(), sigma_cap.detach().cpu(), torch.tensor([0] * text_emb.shape[0], device="cpu"))
+                self.te_buffer.add(text_emb.detach().cpu(), mu_img.detach().cpu(), mu_cap.detach().cpu(), alpha_cap.detach().cpu(), sigma_cap.detach().cpu(), torch.tensor([0] * img.shape[0], device="cpu"))
                 if self.te_buffer.num_seen_examples > buffer_size:
                     break
 
