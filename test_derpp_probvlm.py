@@ -2,7 +2,7 @@ from one_agent import OneAgent
 from utils import * 
 import pickle, argparse, copy
 from ProbVLM.src.losses import *
-import clip
+import clip, os
 from eval_probvlm_acceptance_prob import *
 
 parser = argparse.ArgumentParser()
@@ -37,27 +37,41 @@ Cri = TempCombLoss()
 T1=0
 T2=1
 
-for i in range(20):
+# exp_nameに基づいて保存ディレクトリを作成
+save_dir = f"models/{exp_name}"
+os.makedirs(save_dir, exist_ok=True)
+log_file = os.path.join(save_dir, "output_log.txt")
+
+# ファイルに書き込むための関数
+def log_to_file(message):
+    with open(log_file, "a") as f:
+        f.write(message + "\n")
+
+for i in range(11):
     agentA = OneAgent(agent_name='A', device=args.device)
     agentA = agentA.to(args.device)
     # load pretrain probvlm from probvlm_derpp_test_1 directory
     agentA.load_pretrain(probvlm_path=f"models/{exp_name}/probvlm_A-epoch-{i}.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
-    print(f"probvlm_A-epoch-{i}.pth")
+    
+    # ファイルに書き込み
+    log_to_file(f"probvlm_A-epoch-{i}.pth")
+    
     agentA.eval()
 
-    eval_probvlm_likelihood(agentA, preprocess)
+    score = eval_probvlm_likelihood(agentA, preprocess)
 
-    print("test on conceptual dataset")
+    log_to_file(f"Spearman score {score}")
+
+    # ファイルに書き込み
+    log_to_file("test on conceptual dataset")
     
-
     test_loss = 0
     for idx, batch in tqdm(enumerate(conceptual_pretrain_loader), total=len(conceptual_pretrain_loader), desc="eval"):
         image = batch[0].to(args.device)
         vlm_token = batch[2].to(args.device)
         index = batch[5]
-        # z = agentA.image_encoder(image)
-        z,_,_, _ = agentA.image_encoder(image)
-        text_emb = agentA.CLIP_Net.encode_text(vlm_token).to(args.device, dtype = torch.float32)
+        z, _, _, _ = agentA.image_encoder(image)
+        text_emb = agentA.CLIP_Net.encode_text(vlm_token).to(args.device, dtype=torch.float32)
 
         txt_mu, txt_alpha, txt_beta = agentA.ProbVLM_Net.txt_BayesCap(text_emb)
 
@@ -65,9 +79,13 @@ for i in range(20):
         test_loss += loss.item()
 
     test_loss /= len(conceptual_pretrain_loader)
-    print(f"Test Loss: {test_loss}")
+    
+    # ファイルに書き込み
+    log_to_file(f"Test Loss on Conceptual Dataset: {test_loss}")
 
-    print("test on coco dataset")
+    # ファイルに書き込み
+    log_to_file("test on coco dataset")
+    
     agentA.eval()
 
     test_loss = 0
@@ -75,9 +93,8 @@ for i in range(20):
         image = batch[0].to(args.device)
         vlm_token = batch[2].to(args.device)
         index = batch[5]
-        # z = agentA.image_encoder(image)
-        z,_,_, _ = agentA.image_encoder(image)
-        text_emb = agentA.CLIP_Net.encode_text(vlm_token).to(args.device, dtype = torch.float32)
+        z, _, _, _ = agentA.image_encoder(image)
+        text_emb = agentA.CLIP_Net.encode_text(vlm_token).to(args.device, dtype=torch.float32)
 
         txt_mu, txt_alpha, txt_beta = agentA.ProbVLM_Net.txt_BayesCap(text_emb)
 
@@ -85,5 +102,6 @@ for i in range(20):
         test_loss += loss.item()
 
     test_loss /= len(coco_pretrain_loader)
-    print(f"Test Loss: {test_loss}")
     
+    # ファイルに書き込み
+    log_to_file(f"Test Loss on COCO Dataset: {test_loss}")

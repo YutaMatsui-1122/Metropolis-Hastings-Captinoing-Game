@@ -3,9 +3,9 @@ from utils import *
 import pandas as pd
 from evaluation_metrics import *
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 
-exp_name = "gemcg_unified_dataset_coco5000_cc3m5000_agentA05_agentBbeta005_1"
+exp_name = "mhcg_derpp_0.05_1"
 exp_dir = f"exp/{exp_name}"
 observation_file = "communication_coco_5000_cc3m_5000"
 eval_sign = False
@@ -16,9 +16,8 @@ bleu_list = []
 meteor_list = []
 bert_list = []
 
-
-agentA_initial_sign = pd.read_csv(f"{exp_dir}/A/sign_initial.csv")["captions"].tolist()
-agentB_initial_sign = pd.read_csv(f"{exp_dir}/B/sign_initial.csv")["captions"].tolist()
+agentA_initial_sign = pd.read_csv(f"{exp_dir}/A/agent_A_sign.csv")["initial"].tolist()
+agentB_initial_sign = pd.read_csv(f"{exp_dir}/B/agent_B_sign.csv")["initial"].tolist()
 
 bleu = 0
 meteor = 0

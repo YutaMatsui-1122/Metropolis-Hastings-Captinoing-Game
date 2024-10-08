@@ -538,7 +538,7 @@ def tokenizer_decode(token):
     
     return cleaned_str + '.'
 
-def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: bool = True) -> torch.LongTensor:
+def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: bool = True, lower: bool = True) -> torch.LongTensor:
     """
     Returns the tokenized representation of given input string(s)
 
@@ -562,7 +562,7 @@ def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: b
 
     sot_token = _tokenizer.encoder["<|startoftext|>"]
     eot_token = _tokenizer.encoder["<|endoftext|>"]
-    all_tokens = [[sot_token] + _tokenizer.encode(text) + [eot_token] for text in texts]
+    all_tokens = [[sot_token] + _tokenizer.encode(text, lower) + [eot_token] for text in texts]
     result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
 
     for i, tokens in enumerate(all_tokens):
@@ -708,11 +708,11 @@ def generate_batch(
     stop_token='.'
 ):
     model.eval()
-    generated_list = []
     stop_token_id = tokenizer.encode(stop_token)[0]
     device = next(model.parameters()).device
     
     tokens = None
+    import time
 
     with torch.no_grad():
         generated = embed.to(device)
@@ -751,6 +751,7 @@ def generate_batch(
             # entry_length - 2回目のループで終了トークンが見つからない場合
             if i == entry_length - 2:
                 tokens = torch.cat((tokens, torch.full((tokens.shape[0], 1), stop_token_id, dtype=tokens.dtype).to(device)), dim=1)
+
 
         output_list = tokens.cpu().numpy().tolist()
         output_text = [tokenizer.decode(output_list[i]) for i in range(len(output_list))]
@@ -1321,16 +1322,16 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
 
-    datasize_coco = 1000
-    datasize_cc3m = 1000
+    datasize_coco = 500
+    datasize_cc3m = 500
 
     # データセットの初期化
-    dataset = UnifiedDataset(data_mode='test', transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
+    dataset = UnifiedDataset(data_mode='train', transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
     print("Dataset length:", len(dataset))
 
     # save dataset
-    # with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
-    with open(f"dataset/dataset_cache/test_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+    with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+    # with open(f"dataset/dataset_cache/test_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
         pickle.dump(dataset, f)
 
     exit()

@@ -57,9 +57,6 @@ def clip_score(clip, image_features, caption_features):
     clip_score = 1.0 * np.clip(np.diag(similarities), 0, None)
     return clip_score
 
-
-
-
 def eval_probvlm_acceptance_prob(agent, preprocess):
     # all_captions_images は、all_captions_image_0, all_captions_image_1, ... などの辞書をリストに格納
     all_captions_images = [all_captions_image_0, all_captions_image_1, all_captions_image_2, all_captions_image_4,
@@ -137,6 +134,7 @@ def eval_probvlm_likelihood(agent, preprocess, batch_size=100):
     beta = torch.cat(beta_list, dim=0)
     z = torch.cat(z_list, dim=0)
     
+    return_score = {}
     # Loop through coco and conceptual datasets
     for data_name in ["coco", "conceptual"]:
         likelihood_lists = []
@@ -171,8 +169,9 @@ def eval_probvlm_likelihood(agent, preprocess, batch_size=100):
         # Calculate spearman correlation
         score, _ = spearmanr(scores, likelihood_lists)
         print(f"{data_name} Spearman score: {score:.4f}")
+        return_score[data_name] = score
 
-    return score
+    return return_score
 
 if __name__ == "__main__":
 

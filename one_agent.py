@@ -15,7 +15,7 @@ from ProbVLM.src.utils import load_data_loader
 from ProbVLM.src.ds import prepare_coco_dataloaders
 
 from ProbVLM.src.networks import *
-from ProbVLM.src.train_probVLM import *
+# from ProbVLM.src.train_probVLM import *
 import clip
 from CLIP_prefix_caption.train import *
 
@@ -26,10 +26,12 @@ import argparse
 from ProbVLM.src.ds.simple_tokenizer import SimpleTokenizer as _Tokenizer
 from update_models import *
 
+import torch.multiprocessing as mp
+
 _tokenizer = _Tokenizer()
 
 class OneAgent(nn.Module):
-    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, der_alpha=0.5, derpp_beta=0.5):
+    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, te_alpha_beta=0.5, td_alpha_beta=0.5, te_train_mode="DERPP", td_train_mode="DERPP"):
         super().__init__()
         self.agent_name = agent_name
         self.device = device
@@ -60,14 +62,17 @@ class OneAgent(nn.Module):
         self.td_update_epochs = td_update_epochs
         self.te_update_epochs = te_update_epochs
         self.temperature = temperature
-        self.der_alpha = der_alpha
-        self.derpp_beta = derpp_beta
+        self.te_alpha_beta = te_alpha_beta
+        self.td_alpha_beta = td_alpha_beta
+        self.te_train_mode = te_train_mode
+        self.td_train_mode = td_train_mode
     
     def initialize_sign(self):
         print("Agent", self.agent_name, " initialize sign")
         with torch.no_grad():
             i = 0
-            for batch in self.dataloader_MHNG_fix:
+            # for batch in self.dataloader_MHNG_fix:
+            for batch in tqdm(self.dataloader_MHNG_fix, desc="initialize sign"):
                 # img = batch[0].to(self.device)
                 img = batch["image"].to(self.device)
                 mu, _, _, _ = self.image_encoder(img)
@@ -82,18 +87,21 @@ class OneAgent(nn.Module):
                     self.dataloader_MHNG_fix.dataset.dataset[i]["vlm_token"] = vlm_token
                     self.dataloader_MHNG_fix.dataset.dataset[i]["gpt_token"] = gpt_token
                     self.dataloader_MHNG_fix.dataset.dataset[i]["dataset"] = datatype
-
                     i += 1
     
     def save_sign(self, status):
-        # save sign in dataloader_MHNG_fix with status
-        print("Agent", self.agent_name, " save sign")
         # captions = self.dataloader_MHNG_fix.dataset.captions
         captions = [self.dataloader_MHNG_fix.dataset.dataset[i]["caption"] for i in range(len(self.dataloader_MHNG_fix.dataset))]
+        self.df_sign[status] = captions
         # save sign in csv
-        df = pd.DataFrame({'captions': captions})
-        df.to_csv(f"{self.save_dir}/sign_{status}.csv")
-
+        self.df_sign.to_csv(f"{self.save_dir}/agent_{self.agent_name}_sign.csv")
+    
+    def save_proposed_w(self, proposed_w, status):
+        # captions = self.dataloader_MHNG_fix.dataset.captions
+        proposed_captions = [tokenizer_decode(proposed_w[i]) for i in range(len(proposed_w))]
+        self.df_proposed_w[status] = proposed_captions
+        # save sign in csv
+        self.df_proposed_w.to_csv(f"{self.save_dir}/agent_{self.agent_name}_proposed_w.csv")
 
     def load_pretrain(self, probvlm_path, clipcap_path, strict_clipcap=True):
         self.ProbVLM_Net.load_state_dict(torch.load(probvlm_path))
@@ -109,6 +117,8 @@ class OneAgent(nn.Module):
         self.MH_epochs = MH_iter
         self.annealing_beta = annealing_beta
         self.mode = mode
+        self.df_proposed_w = pd.DataFrame()
+        self.df_sign = pd.DataFrame()
 
     def image_encoder(self, o): # o: image
         with torch.no_grad():
@@ -145,18 +155,68 @@ class OneAgent(nn.Module):
         with torch.no_grad():
             proposed_w = []
             max_index = len(self.dataloader_MHNG_fix.dataset)
-            batch_size = 200
+            batch_size = 500
             indices = torch.arange(max_index)
-
             for i in range(0, max_index, batch_size):
                 index = indices[i:i + batch_size]
                 z = self.z[index]
                 w = self.text_decoder(z)
                 proposed_w.append(tokenize(w))
             proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
-            
         return proposed_w
-    
+
+    def propose_ddp(self, world_size=2):
+        print(f"Agent {self.agent_name} propose_ddp with world size {world_size}")
+
+        # DDP用の関数
+        def run(args):
+            rank, world_size = args  # タプルとして受け取る
+            print(f"Rank {rank} process running")
+            dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+            torch.cuda.set_device(rank)
+            
+            # モデルをDDPでラップ
+            model_ddp = DDP(self.to(rank), device_ids=[rank])
+
+            with torch.no_grad():
+                proposed_w = []
+                max_index = len(self.dataloader_MHNG_fix.dataset)
+                batch_size = 200
+                indices = torch.arange(max_index)
+
+                # 各プロセスにデータを分割
+                num_samples_per_rank = max_index // world_size
+                start_idx = rank * num_samples_per_rank
+                end_idx = start_idx + num_samples_per_rank if rank != world_size - 1 else max_index
+
+                for i in range(start_idx, end_idx, batch_size):
+                    index = indices[i:i + batch_size]
+                    z_part = self.z[index]
+
+                    # モデルのDDP版を使ってテキストデコードを実行
+                    w = model_ddp.module.text_decoder(z_part)
+                    proposed_w.append(tokenize(w))
+
+                proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
+
+                # 全プロセスの結果を集める
+                gathered_proposed_w = [torch.zeros_like(proposed_w) for _ in range(world_size)]
+                dist.all_gather(gathered_proposed_w, proposed_w)
+
+                dist.destroy_process_group()
+
+                if rank == 0:
+                    # ランク0で結果をまとめて返す
+                    proposed_w_final = torch.cat(gathered_proposed_w, dim=0)
+                    return proposed_w_final
+            return None
+
+        # 各プロセスでrun関数を実行し、ランク0の結果を取得
+        proposed_captions = mp.get_context("spawn").Pool(world_size).map(run, [(rank, world_size) for rank in range(world_size)])
+
+        # ランク0のキャプションを返す
+        return proposed_captions[0] if proposed_captions is not None else None
+
     def judge(self, proposed_w, iter = 0):
         print("Agent", self.agent_name, " judge")
         with torch.no_grad():
@@ -167,21 +227,6 @@ class OneAgent(nn.Module):
             # before_self_w = torch.cat(self.dataloader_MHNG_fix.dataset.dataset["vlm_token"], dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
             updated_index_list = []
 
-            if self.annealing_beta == "None":
-                beta_ratio =1
-            elif self.annealing_beta == "cosine":
-                beta_ratio = cosine_annealing_beta(iter, epochs=self.MH_epochs, initial_beta=0.8, final_beta=1)
-            elif self.annealing_beta == "exponential":
-                beta_ratio = exponential_annealing_beta(iter, initial_beta=0.8, epochs=self.MH_epochs)
-            elif self.annealing_beta == "linear":
-                beta_ratio = linear_annealing_beta(iter, epochs=self.MH_epochs, initial_beta=0.8, final_beta=1)
-            elif self.annealing_beta == "tanh":
-                beta_ratio = tanh_annealing(iter, epochs=self.MH_epochs, initial_beta=0.8, final_beta=1)
-            else:
-                print("annealing_beta is not defined")
-                exit()
-            # elif 
-
             max_index = len(self.dataloader_MHNG_fix.dataset)
             batch_size = 100
             indices = torch.arange(max_index)
@@ -190,8 +235,6 @@ class OneAgent(nn.Module):
                 index = indices[i:i + batch_size]
                 mu_Sp, alpha_Sp, beta_Sp = self.text_encoder(proposed_w[index])
                 mu_Li, alpha_Li, beta_Li = self.text_encoder(before_self_w[index])
-
-                beta_Sp = beta_Sp * beta_ratio
                 
                 # calculate p(z|w,\phi)
                 p_li = -self.GGL(mu_Li, alpha_Li, beta_Li, self.z[index])
@@ -209,32 +252,16 @@ class OneAgent(nn.Module):
                 # update w
                 global_update_index = index[np.where(u < r)[0]]
                 updated_index_list = updated_index_list + list(global_update_index)
+                j = 0
                 for index in global_update_index:
                     self.dataloader_MHNG_fix.dataset.dataset[index]["caption"] = tokenizer_decode(proposed_w[index])
                     self.dataloader_MHNG_fix.dataset.dataset[index]["vlm_token"] = proposed_w[index].cpu()
                     self.dataloader_MHNG_fix.dataset.dataset[index]["gpt_token"] = torch.tensor(self.tokenizer.encode(self.dataloader_MHNG_fix.dataset.dataset[index]["caption"]))
-
-                    # self.dataloader_MHNG_fix.dataset.captions[index] = tokenizer_decode(proposed_w[index])
-                    # self.dataloader_MHNG_fix.dataset.vlm_tokens[index] = proposed_w[index].cpu()                 
-                    # self.dataloader_MHNG_fix.dataset.gpt_tokens[index] = torch.tensor(self.tokenizer.encode(self.dataloader_MHNG_fix.dataset.captions[index]))
-                # save mu_Sp, mu_Li, alpha_Sp, alpha_Li, beta_Sp, beta_Li
-                # mu_Sp_list.append(mu_Sp)
-                # mu_Li_list.append(mu_Li)
-                # alpha_Sp_list.append(alpha_Sp)
-                # alpha_Li_list.append(alpha_Li)
-                # beta_Sp_list.append(beta_Sp)
-                # beta_Li_list.append(beta_Li)
+                    j += 1
+                
             print("acceptance rate:", len(updated_index_list)/len(self.dataloader_MHNG_fix.dataset))
             acceptance_rate = len(updated_index_list)/len(self.dataloader_MHNG_fix.dataset)
             return acceptance_rate
-
-            # mu_Sp_list = torch.cat(mu_Sp_list, dim=0)
-            # mu_Li_list = torch.cat(mu_Li_list, dim=0)
-            # alpha_Sp_list = torch.cat(alpha_Sp_list, dim=0)
-            # alpha_Li_list = torch.cat(alpha_Li_list, dim=0)
-            # beta_Sp_list = torch.cat(beta_Sp_list, dim=0)
-            # beta_Li_list = torch.cat(beta_Li_list, dim=0)
-            # save_MH_naming_game(before_self_w, proposed_w, self.dataloader_MHNG_fix.dataset.vlm_tokens, updated_index_list, self.z, mu_Sp_list, mu_Li_list, alpha_Sp_list, alpha_Li_list, beta_Sp_list, beta_Li_list, f"exp/{self.exp_name}/agent_"+self.agent_name+f"_{iter}"+".csv")
 
     def initialize_td_buffer(self, dataloader, buffer_size):
         print("Agent", self.agent_name, " initialize buffer")
@@ -275,13 +302,14 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " update text decoder")
         self.ClipCap.train()
         #update_clipcap_derpp(agent.CLIP_Net, agent.ClipCap, agent.tokenizer, finetune_train_dataloader, f"models/{args.save_dir}", epochs = 10, lr=args.lr, train_mode=args.cl_mode, device=device, buffer=buffer, alpha=der_alpha, beta=derpp_beta)
-        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=5e-6, train_mode="DERPP", device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.der_alpha, beta=self.derpp_beta)
+        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=1e-5, train_mode=self.td_train_mode, device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.td_alpha_beta, beta=self.td_alpha_beta)
         self.ClipCap = updated_clipcap.eval()
     
     def update_text_encoder(self, em_epoch):
         print("Agent", self.agent_name, " update text encoder")
         self.ProbVLM_Net.train()
-        updated_probvlm = update_probvlm(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-6, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5)
+        # updated_probvlm = update_probvlm(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-6, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5)
+        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name, save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=1, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
         self.ProbVLM_Net = updated_probvlm.eval()
     
     def calculate_p_z_w(self, image, caption):

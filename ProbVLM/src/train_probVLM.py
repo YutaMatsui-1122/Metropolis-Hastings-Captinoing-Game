@@ -8,8 +8,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-import clip
-import ProbVLM.src.ds 
 from ProbVLM.src.ds import prepare_coco_dataloaders, prepare_flickr_dataloaders, prepare_cub_dataloaders, prepare_flo_dataloaders
 from tqdm import tqdm
 from ProbVLM.src.losses import *

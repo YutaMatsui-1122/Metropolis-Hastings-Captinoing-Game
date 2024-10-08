@@ -118,9 +118,12 @@ class SimpleTokenizer(object):
         self.cache[token] = word
         return word
 
-    def encode(self, text):
+    def encode(self, text, lower=True):
         bpe_tokens = []
-        text = whitespace_clean(basic_clean(text)).lower()
+        # text = whitespace_clean(basic_clean(text)).lower()
+        text = whitespace_clean(basic_clean(text))
+        if lower:
+            text = text.lower()
         for token in re.findall(self.pat, text):
             token = ''.join(self.byte_encoder[b] for b in token.encode('utf-8'))
             bpe_tokens.extend(self.encoder[bpe_token] for bpe_token in self.bpe(token).split(' '))
