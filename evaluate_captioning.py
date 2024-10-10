@@ -236,12 +236,16 @@ if __name__ == '__main__':
     # argparseを使ってコマンドライン引数を取得
     parser = argparse.ArgumentParser(description='PAC-S evaluation')
     parser.add_argument('--dataset_name', type=str, default='coco', choices=['coco', 'nocaps', 'cc3m'])
+    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--num_workers', default=1, type=int)
     parser.add_argument('--device', type=str, default='cuda:2')
+    parser.add_argument('--em_iter', default=0, type=int)
+    parser.add_argument('--temperature', default=0.62, type=float)
+    parser.add_argument('--use_official_model', action='store_true', default=False)
 
     args = parser.parse_args()
 
     dataset_name = args.dataset_name
-    num_workers = 1
 
     # データ変換（例として、画像サイズを256x256にリサイズ）
     clip_model, transform = clip.load('ViT-B/32', jit=False)
@@ -249,50 +253,51 @@ if __name__ == '__main__':
     # データセットとデータローダーの作成
     if dataset_name == 'nocaps':
         dataset = NoCapsDataset(annotation_file=nocap_annotation_file, img_dir=nocap_images_dir, transform=transform, return_captions=False)
-        data_loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=num_workers)
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     # class ConceptualCaptionsDataset(Dataset):
     # def __init__(self, gpt2_type: str = "gpt2", data_mode: str = "train", img_dir=None, transform=None, return_captions=True, prefix_length=10, ids=None, datasize="full"):
     elif dataset_name == 'cc3m':
         dataset = ConceptualCaptionsDataset(data_mode='test', img_dir=None, transform=transform, return_captions=False, prefix_length=10, ids=None, datasize="full")
-        data_loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=num_workers)
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     else:
         dataset = CocoDataset(annotation_file=coco_annotation_file, img_dir=coco_images_dir, transform=transform)
-        data_loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=num_workers)
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     print(f"Number of images in the dataset: {len(dataset)}")
     # 0.2. Define the device
     device = torch.device(args.device)
 
     # 0.3. Set the experiment name, directory, and the dataset
-    exp_name = "gemcg_unified_dataset_coco5000_cc3m5000_agentA05_agentBbeta005_1"
+    exp_name = "mhcg_derpp_0.05_1"
     exp_dir = f"exp/{exp_name}"
     exp_eval_dir = f"exp_eval/{exp_name}/{dataset_name}"
     os.makedirs(exp_eval_dir, exist_ok=True)
-    temperature = 0.62
+    temperature = args.temperature
 
-    use_official_model = False
+    use_official_model = args.use_official_model
 
-    for epoch in [9]: 
+    for epoch in [args.em_iter]:
         for agent_name in ['B', 'A']:
-            
             agent = OneAgent(agent_name=agent_name, device=device,temperature=temperature)
             agent = agent.to(device)
 
-            if use_official_model:
+            if use_official_model == True:
                 exp_name = "pretrain"
                 exp_eval_dir = f"exp_eval/{exp_name}"
                 os.makedirs(exp_eval_dir, exist_ok=True)
                 
                 if agent_name == 'A':
-                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m.json"
-                    agent.load_pretrain(probvlm_path="models/probVLM_conceptual_prefix-035.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
+                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m_temperature_{temperature}.json"
+                    agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
                 else:
-                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_coco.json"
+                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_coco_temperature_{temperature}.json"
                     agent.load_pretrain(probvlm_path="models/probVLM_coco_prefix-035.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
             else:
                 candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_{agent_name}_epoch_{epoch}_temperature_{temperature}.json"
                 agent.lora_setting()
-                agent.load_pretrain(probvlm_path=f"{exp_dir}/{agent_name}/probvlm_{agent_name}_{epoch}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agent_name}/clipcap_{agent_name}_{epoch}-009.pt")
+                agent.load_pretrain(probvlm_path=f"{exp_dir}/{agent_name}/probvlm_{agent_name}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agent_name}/clipcap_{agent_name}_{epoch}-009.pt")
+
+            print(f"EM iter {args.em_iter} , Candidate path {candidate_path}")
 
             candidate = {}
 

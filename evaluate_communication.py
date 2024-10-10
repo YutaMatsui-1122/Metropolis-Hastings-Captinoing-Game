@@ -58,8 +58,8 @@ for em_iter in [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
         agentA.load_pretrain(probvlm_path=f"{exp_dir}/{agentA.agent_name}/probvlm_A_{em_iter}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentA.agent_name}/clipcap_A_{em_iter}-009.pt")
         agentB.lora_setting()
         agentB.load_pretrain(probvlm_path=f"{exp_dir}/{agentB.agent_name}/probvlm_B_{em_iter}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentB.agent_name}/clipcap_B_{em_iter}-009.pt")
-    agentA_pretrain.load_pretrain(probvlm_path="models/probVLM_conceptual_prefix-035.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
-    agentB_pretrain.load_pretrain(probvlm_path="models/probVLM_coco_prefix-035.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
+    agentA_pretrain.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
+    agentB_pretrain.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
     print("Load the trained agents' parameters done")
     # 1.2. Load the shared sign and set the observation dataset
     # Load the shared sign

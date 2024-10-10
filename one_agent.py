@@ -309,7 +309,7 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " update text encoder")
         self.ProbVLM_Net.train()
         # updated_probvlm = update_probvlm(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-6, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5)
-        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name, save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=1, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
+        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=1, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
         self.ProbVLM_Net = updated_probvlm.eval()
     
     def calculate_p_z_w(self, image, caption):
