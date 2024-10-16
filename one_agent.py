@@ -1,43 +1,30 @@
-import os, copy
+import copy
 import argparse
-import time
 
-from os.path import join as ospj
-from os.path import expanduser
-from munch import Munch as mch
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
 from peft import get_peft_model, LoraConfig, TaskType
 
-from ProbVLM.src.utils import load_data_loader
-
-from ProbVLM.src.ds import prepare_coco_dataloaders
-
 from ProbVLM.src.networks import *
-# from ProbVLM.src.train_probVLM import *
 import clip
 from CLIP_prefix_caption.train import *
-
 from utils import *
-
 import argparse
-
 from ProbVLM.src.ds.simple_tokenizer import SimpleTokenizer as _Tokenizer
 from update_models import *
-
 import torch.multiprocessing as mp
+from eval_probvlm_acceptance_prob import *
 
 _tokenizer = _Tokenizer()
 
 class OneAgent(nn.Module):
-    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, te_alpha_beta=0.5, td_alpha_beta=0.5, te_train_mode="DERPP", td_train_mode="DERPP"):
+    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, te_alpha_beta=0.5, td_alpha_beta=0.5, te_train_mode="DERPP", td_train_mode="DERPP", clip_arch = "ViT-B/32"):
         super().__init__()
         self.agent_name = agent_name
         self.device = device
         self.ProbVLM_Net = BayesCap_for_CLIP(inp_dim=512, out_dim=512, hid_dim=256, num_layers=3, p_drop=0.01,)
         self.ProbVLM_Net.eval()
-        self.CLIP_Net, self.preprocess = clip.load("ViT-B/32", device = self.device)
+        self.CLIP_Net, self.preprocess = clip.load(clip_arch, device = self.device)
         self.CLIP_Net = self.CLIP_Net.float()
         self.CLIP_Net.eval()
         self.adapter = adapter
@@ -52,6 +39,7 @@ class OneAgent(nn.Module):
         self.ClipCap = ClipCaptionPrefix(self.prefix_length, self.prefix_length_clip, self.prefix_dim, self.num_layers, self.adapter)
 
         self.GGL = GenGaussLoss(reduction='batchsum')
+        self.GGLogLikelihood = GenGaussLogLikelihood(reduction='batchsum')
         self.clipcap_loss_list = []
         self.clipcap_loss_list_test = []
         self.probvlm_loss_list = []
@@ -105,7 +93,10 @@ class OneAgent(nn.Module):
 
     def load_pretrain(self, probvlm_path, clipcap_path, strict_clipcap=True):
         self.ProbVLM_Net.load_state_dict(torch.load(probvlm_path))
-        self.ClipCap.load_state_dict(torch.load(clipcap_path), strict=strict_clipcap)
+        # self.ClipCap.load_state_dict(torch.load(clipcap_path), strict=strict_clipcap)
+        clipcap_weights = torch.load(clipcap_path, map_location="cpu")
+        self.ClipCap.load_state_dict(clipcap_weights, strict=strict_clipcap)
+        self.ClipCap.to(self.device)
 
     def lora_setting(self):
         peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["c_fc"])
@@ -164,58 +155,6 @@ class OneAgent(nn.Module):
                 proposed_w.append(tokenize(w))
             proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
         return proposed_w
-
-    def propose_ddp(self, world_size=2):
-        print(f"Agent {self.agent_name} propose_ddp with world size {world_size}")
-
-        # DDP用の関数
-        def run(args):
-            rank, world_size = args  # タプルとして受け取る
-            print(f"Rank {rank} process running")
-            dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
-            torch.cuda.set_device(rank)
-            
-            # モデルをDDPでラップ
-            model_ddp = DDP(self.to(rank), device_ids=[rank])
-
-            with torch.no_grad():
-                proposed_w = []
-                max_index = len(self.dataloader_MHNG_fix.dataset)
-                batch_size = 200
-                indices = torch.arange(max_index)
-
-                # 各プロセスにデータを分割
-                num_samples_per_rank = max_index // world_size
-                start_idx = rank * num_samples_per_rank
-                end_idx = start_idx + num_samples_per_rank if rank != world_size - 1 else max_index
-
-                for i in range(start_idx, end_idx, batch_size):
-                    index = indices[i:i + batch_size]
-                    z_part = self.z[index]
-
-                    # モデルのDDP版を使ってテキストデコードを実行
-                    w = model_ddp.module.text_decoder(z_part)
-                    proposed_w.append(tokenize(w))
-
-                proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
-
-                # 全プロセスの結果を集める
-                gathered_proposed_w = [torch.zeros_like(proposed_w) for _ in range(world_size)]
-                dist.all_gather(gathered_proposed_w, proposed_w)
-
-                dist.destroy_process_group()
-
-                if rank == 0:
-                    # ランク0で結果をまとめて返す
-                    proposed_w_final = torch.cat(gathered_proposed_w, dim=0)
-                    return proposed_w_final
-            return None
-
-        # 各プロセスでrun関数を実行し、ランク0の結果を取得
-        proposed_captions = mp.get_context("spawn").Pool(world_size).map(run, [(rank, world_size) for rank in range(world_size)])
-
-        # ランク0のキャプションを返す
-        return proposed_captions[0] if proposed_captions is not None else None
 
     def judge(self, proposed_w, iter = 0):
         print("Agent", self.agent_name, " judge")
@@ -282,6 +221,8 @@ class OneAgent(nn.Module):
                     break
     
     def initialize_te_buffer(self, dataloader, buffer_size):
+        self.ProbVLM_Net.txt_BayesCap.eval()
+        self.ProbVLM_Net.img_BayesCap.eval()
         print("Agent", self.agent_name, " initialize buffer")
         self.te_buffer = ProbVLMBuffer(buffer_size=buffer_size)
         with torch.no_grad():
@@ -307,10 +248,12 @@ class OneAgent(nn.Module):
     
     def update_text_encoder(self, em_epoch):
         print("Agent", self.agent_name, " update text encoder")
+        eval_probvlm_acceptance_prob(self, self.preprocess)
         self.ProbVLM_Net.train()
         # updated_probvlm = update_probvlm(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-6, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5)
-        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=1, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
+        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=0, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
         self.ProbVLM_Net = updated_probvlm.eval()
+        eval_probvlm_acceptance_prob(self, self.preprocess)
     
     def calculate_p_z_w(self, image, caption):
         # tokenized caption

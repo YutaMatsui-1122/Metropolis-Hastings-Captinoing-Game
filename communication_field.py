@@ -46,7 +46,7 @@ class CommunicationField():
                 proposed_w_B = self.agentB.propose()
                 self.agentA.judge(proposed_w_B, mh_iter)
                 
-    def gemcg(self):
+    def mhcg(self):
         # Generalized EM Captioning Game
         self.agentA.perception()
         self.agentB.perception()
@@ -63,6 +63,7 @@ class CommunicationField():
                 status = f"EM_{em_iter}_MH_{mh_iter}"
 
                 print("MHCG iteration: ", mh_iter)
+                agents = [self.agentA, self.agentB]
                 proposed_w_A = self.agentA.propose()
                 
                 ar_B = self.agentB.judge(proposed_w_A, mh_iter)
@@ -191,5 +192,5 @@ if __name__ == '__main__':
         agentA.initialize_te_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
         agentB.initialize_te_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
 
-        communication_field.gemcg()
+        communication_field.mhcg()
         # communication_field.only_judge()

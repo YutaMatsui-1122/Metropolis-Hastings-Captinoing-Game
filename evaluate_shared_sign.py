@@ -10,7 +10,7 @@ exp_dir = f"exp/{exp_name}"
 observation_file = "communication_coco_5000_cc3m_5000"
 eval_sign = False
 eval_captioning = True
-em_iter = 10
+em_iter = 25
 
 bleu_list = []
 meteor_list = []
@@ -53,8 +53,8 @@ bert_list.append(bert_s)
 # afterCG sign
 
 for i in range(em_iter):
-    agentA_afterCG_sign = pd.read_csv(f"{exp_dir}/A/sign_EM_{i}.csv")["captions"].tolist()
-    agentB_afterCG_sign = pd.read_csv(f"{exp_dir}/B/sign_EM_{i}.csv")["captions"].tolist()
+    agentA_afterCG_sign = pd.read_csv(f"{exp_dir}/A/agent_A_sign.csv")[f"EM_{i}_MH_9"].tolist()
+    agentB_afterCG_sign = pd.read_csv(f"{exp_dir}/A/agent_B_sign.csv")[f"EM_{i}_MH_9"].tolist()
 
     bleu = 0
     meteor = 0
@@ -105,11 +105,6 @@ plt.clf()
 plt.figure()
 plt.plot(bert_list, label="BERT")
 plt.savefig(f"{exp_dir}/BERT.png")
-
-
-
-
-
 
 # agentA_afterCG_sign = pd.read_csv(f"{exp_dir}/A/sign_EM_9.csv")["captions"].tolist()
 # agentB_afterCG_sign = pd.read_csv(f"{exp_dir}/B/sign_EM_9.csv")["captions"].tolist()

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 from torch import Tensor
+import math
 
 class GenGaussLoss(nn.Module):
 	def __init__(
@@ -56,6 +57,105 @@ class GenGaussLoss(nn.Module):
 		else:
 			print('Reduction not supported')
 			return None
+
+class GenGaussLogLikelihood(nn.Module):
+    def __init__(self, reduction='mean', alpha_eps=1e-4, beta_eps=1e-4, resi_min=1e-4, resi_max=1e3) -> None:
+        super(GenGaussLogLikelihood, self).__init__()
+        self.reduction = reduction
+        self.alpha_eps = alpha_eps
+        self.beta_eps = beta_eps
+        self.resi_min = resi_min
+        self.resi_max = resi_max
+
+    def forward(self, mean: torch.Tensor, one_over_alpha: torch.Tensor, beta: torch.Tensor, target: torch.Tensor):
+        one_over_alpha1 = one_over_alpha + self.alpha_eps
+        beta1 = beta + self.beta_eps
+
+        resi = torch.abs(mean - target)
+        resi = torch.pow(resi * one_over_alpha1, beta1).clamp(min=self.resi_min, max=self.resi_max)
+
+        log_one_over_alpha = torch.log(one_over_alpha1)
+        log_beta = torch.log(beta1)
+        lgamma_beta = torch.lgamma(torch.pow(beta1, -1))
+        log_two = math.log(2)
+
+
+        nll = resi - log_one_over_alpha + lgamma_beta - log_beta + log_two
+
+        loglikelihood = -nll
+
+        if self.reduction == 'mean':
+            return loglikelihood.mean()
+        elif self.reduction == 'sum':
+            return loglikelihood.sum()
+        elif self.reduction == 'none':
+            return loglikelihood
+        elif self.reduction == 'batchsum':
+            return loglikelihood.sum(dim=1)
+        else:
+            print('Reduction not supported')
+            return None
+
+class ModifiedGenGaussLoss(nn.Module):
+    def __init__(
+        self, reduction='mean',
+        alpha_eps=1e-4, beta_eps=1e-4,
+        resi_min=1e-4, resi_max=1e3
+    ) -> None:
+        super(ModifiedGenGaussLoss, self).__init__()
+        self.reduction = reduction
+        self.alpha_eps = alpha_eps
+        self.beta_eps = beta_eps
+        self.resi_min = resi_min
+        self.resi_max = resi_max
+    
+    def forward(
+        self, 
+        mean: Tensor, one_over_alpha: Tensor, beta: Tensor, target: Tensor
+    ):
+        # Adding small values for numerical stability
+        one_over_alpha1 = one_over_alpha + self.alpha_eps
+        beta1 = beta + self.beta_eps
+
+        # Calculate residuals (abs difference between mean and target)
+        resi = torch.abs(mean - target)
+
+        # Apply generalized Gaussian distribution formula (with beta exponentiation)
+        resi = torch.pow(resi * one_over_alpha1, beta1).clamp(min=self.resi_min, max=self.resi_max)
+        
+        # Check for NaNs in residuals
+        if torch.sum(resi != resi) > 0:
+            print('resi has nans!!')
+            return None
+        
+        # Logarithms of the parameters
+        log_one_over_alpha = torch.log(one_over_alpha1)
+        log_beta = torch.log(beta1)
+        lgamma_beta = torch.lgamma(torch.pow(beta1, -1))
+        
+        # Check for NaNs in the logarithms
+        if torch.sum(log_one_over_alpha != log_one_over_alpha) > 0:
+            print('log_one_over_alpha has nan')
+        if torch.sum(lgamma_beta != lgamma_beta) > 0:
+            print('lgamma_beta has nan')
+        if torch.sum(log_beta != log_beta) > 0:
+            print('log_beta has nan')
+        
+        # Loss calculation
+        l = resi - log_one_over_alpha + lgamma_beta - log_beta
+
+        # Return loss based on the specified reduction method
+        if self.reduction == 'mean':
+            return l.mean()
+        elif self.reduction == 'sum':
+            return l.sum()
+        elif self.reduction == 'none':
+            return l
+        elif self.reduction == 'batchsum':
+            return l.sum(dim=1)
+        else:
+            print('Reduction not supported')
+            return None
 
 class TempCombLoss(nn.Module):
 	def __init__(

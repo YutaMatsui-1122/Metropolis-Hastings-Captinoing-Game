@@ -11,6 +11,7 @@ from utils import *
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
+
 from transformers import get_linear_schedule_with_warmup
 
 import clip
@@ -141,6 +142,16 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
     params = list(clipcap.parameters())
 
     optimizer = AdamW(params, lr=lr)
+
+    # 学習されるパラメータの数を表示
+    num_params = sum(p.numel() for p in params if p.requires_grad)
+    print(f"更新されるパラメータの総数: {num_params}")
+
+    # 更新されるパラメータの詳細を表示
+    for i, param in enumerate(params):
+        if param.requires_grad:
+            print(f"パラメータ {i}: {param.shape}, 更新される: {param.requires_grad}")
+
     scheduler = get_linear_schedule_with_warmup(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader_shuffle)
     )
@@ -314,6 +325,21 @@ def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epoc
     return BayesCap_Net
 
 def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-5, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=0.9, train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5, pretrain_test_loader = None, fine_tune_test_loader = None):
+    BayesCap_Net.txt_BayesCap.eval()
+    torch.set_printoptions(precision=10)
+    # check the model before training
+    text_emb, z, txt_mu, txt_alpha, txt_beta = buffer.sample(16)
+    text_emb, z, txt_mu, txt_alpha, txt_beta = text_emb.to(device), z.to(device), txt_mu.to(device), txt_alpha.to(device), txt_beta.to(device)
+
+    txt_mu_pred, txt_alpha_pred, txt_beta_pred = BayesCap_Net.txt_BayesCap(text_emb)
+
+    loss_der = nnf.mse_loss(txt_mu_pred, txt_mu) + nnf.mse_loss(txt_alpha_pred, txt_alpha) + nnf.mse_loss(txt_beta_pred, txt_beta)
+    print("before training")
+    print("mu", txt_mu[0][:10], txt_mu_pred[0][:10])
+    print("alpha", txt_alpha[0][:10], txt_alpha_pred[0][:10])
+    print("beta", txt_beta[0][:10], txt_beta_pred[0][:10])
+    print("dark knowledge loss", loss_der.item())
+    
     print("cross_modal_lambda", cross_modal_lambda)
     BayesCap_Net = BayesCap_Net.to(device)
     BayesCap_Net.img_BayesCap.eval()
@@ -333,6 +359,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
 
     # save before training model
     torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-0.pth"))
+
 
     loss_list = []
     loss_der_list = []
@@ -395,7 +422,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
                 loss_der = alpha * nnf.mse_loss(txt_mu_pred, txt_mu) + nnf.mse_loss(txt_alpha_pred, txt_alpha) + nnf.mse_loss(txt_beta_pred, txt_beta)
                 loss_der.backward(retain_graph=True)
 
-                if idx == 0 and eph == 0:
+                if idx == 0 and eph == 1:
                     print("mu", txt_mu[0][:10], txt_mu_pred[0][:10])
                     print("alpha", txt_alpha[0][:10], txt_alpha_pred[0][:10])
                     print("beta", txt_beta[0][:10], txt_beta_pred[0][:10])
@@ -432,6 +459,8 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
         np.save(os.path.join(save_dir, f"{output_prefix}_loss.npy"), np.array(loss_list)) 
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_der.npy"), np.array(loss_der_list))
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_derpp.npy"), np.array(loss_derpp_list))
+
+
 
         if (eph+1) % save_every == 0 or eph == 0 or eph == epochs-1:
             torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph}.pth"))

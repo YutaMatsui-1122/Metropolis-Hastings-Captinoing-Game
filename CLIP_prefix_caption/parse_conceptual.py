@@ -212,7 +212,7 @@ def main():
     parser.add_argument('--num_threads', type=int, default=16)
     parser.add_argument('--max_num_images', type=int, default=1000000)
     args = parser.parse_args()
-    download_conceptual(args.data_root, args.num_threads)
+    # download_conceptual(args.data_root, args.num_threads)
     print("Downloaded")
     create_clip_embeddings(args.data_root, args.clip_model_type)
 

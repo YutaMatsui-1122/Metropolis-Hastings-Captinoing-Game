@@ -1,114 +1,113 @@
 import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
-import time
+import torch.nn as nn
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+torch.set_printoptions(precision=10)
 
-# モデルとトークナイザーのロード
-model_name = "gpt2"
-tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-tokenizer.pad_token = tokenizer.eos_token
-tokenizer.padding_side = "left"
+class GenGaussLogLikelihood(nn.Module):
+    def __init__(self, reduction='mean', alpha_eps=1e-4, beta_eps=1e-4, resi_min=1e-4, resi_max=1e3) -> None:
+        super(GenGaussLogLikelihood, self).__init__()
+        self.reduction = reduction
+        self.alpha_eps = alpha_eps
+        self.beta_eps = beta_eps
+        self.resi_min = resi_min
+        self.resi_max = resi_max
 
-# 100個の適当な入力テキスト
-input_texts = [f"Sample sentence {i}" for i in range(1, 1001)]
-encoding = tokenizer(input_texts, return_tensors="pt", padding=True, truncation=True)
-input_ids = encoding.input_ids
-attention_mask = encoding.attention_mask
+    def forward(self, mean: torch.Tensor, one_over_alpha: torch.Tensor, beta: torch.Tensor, target: torch.Tensor):
+        one_over_alpha1 = one_over_alpha + self.alpha_eps
+        beta1 = beta + self.beta_eps
 
-# シングルGPUバージョンの実行
-def run_single_gpu(input_ids, attention_mask):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = GPT2LMHeadModel.from_pretrained(model_name).to(device)
+        resi = torch.abs(mean - target)
+        resi = torch.pow(resi * one_over_alpha1, beta1).clamp(min=self.resi_min, max=self.resi_max)
 
-    input_ids = input_ids.to(device)
-    attention_mask = attention_mask.to(device)
+        log_one_over_alpha = torch.log(one_over_alpha1)
+        log_beta = torch.log(beta1)
+        lgamma_beta = torch.lgamma(torch.pow(beta1, -1))
+        log_two = math.log(2)
 
-    # 生成の時間を計測
-    start_generate_time = time.time()
 
-    output = model.generate(
-        input_ids,
-        attention_mask=attention_mask,
-        max_length=40,
-        num_return_sequences=1,
-        no_repeat_ngram_size=2,
-        do_sample=True,
-        top_k=50,
-        top_p=0.95,
-        temperature=0.7
+        nll = resi - log_one_over_alpha + lgamma_beta - log_beta + log_two
+
+        loglikelihood = -nll
+
+        if self.reduction == 'mean':
+            return loglikelihood.mean()
+        elif self.reduction == 'sum':
+            return loglikelihood.sum()
+        elif self.reduction == 'none':
+            return loglikelihood
+        elif self.reduction == 'batchsum':
+            return loglikelihood.sum(dim=1)
+        else:
+            print('Reduction not supported')
+            return None
+
+def generalized_gaussian_likelihood(loss):
+    """損失から尤度に変換"""
+    return torch.exp(-loss)
+
+def plot_generalized_gaussian(mean, alpha, beta):
+    """一般化ガウス分布をプロット"""
+    x = torch.linspace(-3 + mean, 3 + mean, 1000)
+    y = generalized_gaussian_pdf(x, mean, alpha, beta)
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(x.numpy(), y.numpy(), label=f'mean={mean}, alpha={alpha}, beta={beta}')
+    plt.title('Generalized Gaussian Distribution')
+    plt.xlabel('x')
+    plt.ylabel('PDF')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('generalized_gaussian.png')  # グラフの保存
+    print("Plot saved as 'generalized_gaussian.png'")
+
+def generalized_gaussian_pdf(x, mean, alpha, beta):
+    """一般化ガウス分布のPDF"""
+    coeff = beta / (2 * alpha * math.gamma(1 / beta))
+    exponent = -torch.pow(torch.abs(x - mean) / alpha, beta)
+    return coeff * torch.exp(exponent)
+
+def test_gen_gauss_loss():
+    mean = torch.tensor([0.3])
+    one_over_alpha = torch.tensor([30])
+    beta = torch.tensor([0.5])
+    target = torch.tensor([0])
+
+    # loss_fn = GenGaussLossModified(reduction='mean', alpha_eps=0, beta_eps=0, resi_min=1e-4, resi_max=1e3)
+    ll_fn = GenGaussLogLikelihood(reduction='mean', alpha_eps=0, beta_eps=0, resi_min=1e-4, resi_max=1e3)
+    model_ll = ll_fn(mean, one_over_alpha, beta, target)
+
+    # manual_loss = manual_generalized_gaussian_loss_torch(
+    #     mean, one_over_alpha, beta, target
+    # )
+    manual_ll = generalized_gaussian_pdf(target, mean, 1.0 / one_over_alpha, beta)
+
+
+    model_likelihood = model_ll.exp()
+    print(f"Model Likelihood: {model_likelihood.item()}")
+
+    manual_likelihood = manual_ll
+    print(f"Manual Likelihood: {manual_likelihood.item()}")
+
+    alpha = 1.0 / (one_over_alpha + 1e-4)
+    plot_generalized_gaussian(mean.item(), alpha.item(), beta.item())
+
+def manual_generalized_gaussian_loss_torch(mean, one_over_alpha, beta, target):
+    alpha = 1.0 / one_over_alpha
+    beta = beta
+    resi = torch.abs(mean - target)
+
+    log_likelihood = (
+        torch.pow(resi / alpha, beta)
+        - torch.log(beta) + math.log(2) + torch.log(alpha)
+        + torch.lgamma(1 / beta)
     )
 
-    end_generate_time = time.time()
-    generate_time = end_generate_time - start_generate_time
-    print(f"Single GPU - Text generation time: {generate_time:.2f} seconds")
+    # print(resi, log_one_over_alpha, lgamma_beta, log_beta, log_two)
+    print(torch.pow(resi / alpha, beta), torch.log(1 / alpha), torch.lgamma(1 / beta), torch.log(beta), math.log(2))
 
-# DDPの初期化関数
-def setup(rank, world_size):
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    return log_likelihood.item()
 
-# DDPの終了処理
-def cleanup():
-    dist.destroy_process_group()
-
-# DDPメイン処理
-def main_ddp(input_ids, attention_mask):
-    world_size = 2  # GPUの数
-    batch_size = 256  # 全体のバッチサイズ
-    per_process_batch_size = batch_size // world_size  # 各プロセスごとのバッチサイズ
-    
-    # DDP実行
-    mp.spawn(run_ddp, args=(world_size, input_ids, attention_mask, per_process_batch_size), nprocs=world_size, join=True)
-
-# DDPメイン処理の中で呼び出すrun_ddp関数
-def run_ddp(rank, world_size, input_ids, attention_mask, per_process_batch_size):
-    setup(rank, world_size)
-
-    # 使用するGPUをcuda:0, cuda:1に限定
-    device = torch.device(f"cuda:{rank}")
-    torch.cuda.set_device(device)
-
-    # モデルをロードしてDDPにラップ
-    model = GPT2LMHeadModel.from_pretrained(model_name).to(device)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-
-    # データを分割
-    num_samples = input_ids.size(0) // world_size
-    start_index = rank * num_samples
-    end_index = start_index + num_samples if rank != world_size - 1 else input_ids.size(0)
-
-    input_ids_split = input_ids[start_index:end_index].to(device)
-    attention_mask_split = attention_mask[start_index:end_index].to(device)
-
-    # 生成の時間を計測
-    start_generate_time = time.time()
-
-    output = model.module.generate(
-        input_ids_split,
-        attention_mask=attention_mask_split,
-        max_length=40,
-        num_return_sequences=1,
-        no_repeat_ngram_size=2,
-        do_sample=True,
-        top_k=50,
-        top_p=0.95,
-        temperature=0.7
-    )
-
-    end_generate_time = time.time()
-    generate_time = end_generate_time - start_generate_time
-    print(f"Rank {rank} - DDP Text generation time: {generate_time:.2f} seconds")
-
-    # 終了処理
-    cleanup()
-
-
-# 比較実行
-if __name__ == "__main__":
-    # Single GPU 実行
-    print("Running Single GPU version")
-    run_single_gpu(input_ids, attention_mask)
-
-    # DDP 実行
-    print("\nRunning DDP version")
-    main_ddp(input_ids, attention_mask)
+# テスト実行
+test_gen_gauss_loss()

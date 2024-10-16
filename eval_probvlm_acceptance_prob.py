@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import torch
 import clip
-from one_agent import OneAgent
+
 from utils import *
 from scipy.stats import spearmanr
 
@@ -174,7 +174,7 @@ def eval_probvlm_likelihood(agent, preprocess, batch_size=100):
     return return_score
 
 if __name__ == "__main__":
-
+    from one_agent import OneAgent
     
     device = "cuda:3" if torch.cuda.is_available() else "cpu"
 

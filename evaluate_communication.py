@@ -22,7 +22,7 @@ import copy
 device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 
 # 0.3. Set the experiment name, directory, and the dataset
-exp_name = "gemcg_unified_dataset_coco5000_cc3m5000_agentA05_agentBbeta005_1"
+exp_name = "mhcg_derpp_0.05_1"
 exp_dir = f"exp/{exp_name}"
 observation_file = "communication_coco_5000_cc3m_5000"
 eval_sign = True
@@ -39,7 +39,7 @@ nll_B_sign_B_list_for_plot = []
 nll_sign_A_list_for_plot = []
 nll_sign_B_list_for_plot = []
 
-for em_iter in [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
+for em_iter in [-1, 20, 15, 10]:
     print("EM Iteration:", em_iter)
     # Load the trained agents
     agentA = OneAgent(agent_name='A', device=device)
@@ -55,9 +55,9 @@ for em_iter in [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
     print("Load the trained agents' parameters")
     if em_iter != -1:
         agentA.lora_setting()
-        agentA.load_pretrain(probvlm_path=f"{exp_dir}/{agentA.agent_name}/probvlm_A_{em_iter}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentA.agent_name}/clipcap_A_{em_iter}-009.pt")
+        agentA.load_pretrain(probvlm_path=f"{exp_dir}/{agentA.agent_name}/probvlm_A-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentA.agent_name}/clipcap_A_{em_iter}-009.pt")
         agentB.lora_setting()
-        agentB.load_pretrain(probvlm_path=f"{exp_dir}/{agentB.agent_name}/probvlm_B_{em_iter}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentB.agent_name}/clipcap_B_{em_iter}-009.pt")
+        agentB.load_pretrain(probvlm_path=f"{exp_dir}/{agentB.agent_name}/probvlm_B-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentB.agent_name}/clipcap_B_{em_iter}-009.pt")
     agentA_pretrain.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
     agentB_pretrain.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
     print("Load the trained agents' parameters done")
@@ -65,17 +65,17 @@ for em_iter in [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
     # Load the shared sign
     if eval_sign:
         if em_iter == -1:
-            shared_sign_A = pd.read_csv(f"{exp_dir}/{agentA.agent_name}/sign_initial.csv")["captions"]
-            shared_sign_B = pd.read_csv(f"{exp_dir}/{agentB.agent_name}/sign_initial.csv")["captions"]
+            shared_sign_A = pd.read_csv(f"{exp_dir}/{agentA.agent_name}/agent_A_sign.csv")[f"initial"]
+            shared_sign_B = pd.read_csv(f"{exp_dir}/{agentB.agent_name}/agent_B_sign.csv")[f"initial"]
         else:
-            shared_sign_A = pd.read_csv(f"{exp_dir}/{agentA.agent_name}/sign_EM_{em_iter}.csv")["captions"]
-            shared_sign_B = pd.read_csv(f"{exp_dir}/{agentB.agent_name}/sign_EM_{em_iter}.csv")["captions"]
+            shared_sign_A = pd.read_csv(f"{exp_dir}/{agentA.agent_name}/agent_A_sign.csv")[f"EM_{em_iter}_MH_9"]
+            shared_sign_B = pd.read_csv(f"{exp_dir}/{agentB.agent_name}/agent_B_sign.csv")[f"EM_{em_iter}_MH_9"]
 
         with open(f"dataset/dataset_cache/{observation_file}.pkl", "rb") as f:
             observation_dataset = pickle.load(f)
             observation_dataset.prefix_length = agentA.prefix_length
 
-        observation_dataloader = torch.utils.data.DataLoader(observation_dataset, batch_size=64, shuffle=False, num_workers=1)
+        observation_dataloader = torch.utils.data.DataLoader(observation_dataset, batch_size=64, shuffle=False, num_workers=8)
 
         # 1.3. Calculate the likelihood of the latent representation given the shared sign
         # Calculate the likelihood of the latent representation given the shared sign

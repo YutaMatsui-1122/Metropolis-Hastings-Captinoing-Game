@@ -5,6 +5,7 @@ import torch
 import clip
 from one_agent import OneAgent
 from utils import *
+from matplotlib import pyplot as plt
 
 if __name__ == "__main__":
 
@@ -14,7 +15,7 @@ if __name__ == "__main__":
     model, preprocess = clip.load("ViT-B/32", device="cpu")
 
     pretrain = False
-    agent_name = "coco"
+    agent_name = "cc3m"
 
     agent = OneAgent(agent_name='A', device=device)
     if pretrain:
@@ -47,7 +48,29 @@ if __name__ == "__main__":
 
     print(mu_i.shape, alpha_i.shape, beta_i.shape, z_i.shape)
 
-    caption1 = df["Coco Generated Captions 0"][0]
-    caption1 = df["Coco Generated Captions 1"][0]
+    caption_sps = ["a man riding on the back of a motorcycle.", "a man riding on the back of a motorcycle on a dirt road.", "a woman is putting a spoon into a cake."]
+    caption_li = "a man on a motorcycle in the mountains."
+    anneal_values = [1000, 100, 10, 1, 0.5, 0.1, 0.01, 0.001, 0.0001, 1e-5, 1e-6, 1e-7, 1e-10, 1e-20]
+    for anneal_value in anneal_values:
+        for caption_sp in caption_sps:
+
+            print(caption_sp, caption_li)
+
+            token_sp = tokenize(caption_sp).to(agent.device)
+            token_li = tokenize(caption_li).to(agent.device)
+
+            mu_t__sp, alpha_t__sp, beta_t__sp, z_t__sp = agent.text_encoder(token_sp, return_z=True)
+            mu_t__li, alpha_t__li, beta_t__li, z_t__li = agent.text_encoder(token_li, return_z=True)
+
+            beta_t__li = beta_t__li * anneal_value
+            beta_t__sp = beta_t__sp * anneal_value
+
+            p_sp = -agent.MGGL(mu_t__sp, alpha_t__sp, beta_t__sp, mu_i).cpu().detach().numpy()
+            p_li = -agent.MGGL(mu_t__li, alpha_t__li, beta_t__li, mu_i).cpu().detach().numpy()
+
+            print(p_sp, p_li)
+            r = np.exp(np.where((p_sp-p_li)<0,(p_sp-p_li),0))
+            print(anneal_value, r, "\n")
+
 
 

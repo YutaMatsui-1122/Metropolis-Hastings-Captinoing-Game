@@ -362,6 +362,8 @@ class UnifiedDataset(Dataset):
             _, _, _, ids, image_root, _, annFile = _get_coco_file_paths(os.path.join(self.root_coco, 'coco'))
             extra_ids = None
             extra_annFile = None
+        else:
+            raise ValueError("Invalid data_mode")
 
         coco = COCO(annFile)
         
@@ -410,10 +412,10 @@ class UnifiedDataset(Dataset):
     def set_conceptual_dataset(self, datasize):
         if self.data_mode == "train":
             image_root = os.path.join(self.root_cc3m, 'training')
-            data_file = os.path.join(self.root_cc3m, 'training_imgtxt.tsv')
+            data_file = os.path.join(self.root_cc3m, 'training_imgtxt_cleaned.tsv')
         elif self.data_mode == "test":
             image_root = os.path.join(self.root_cc3m, 'validation')
-            data_file = os.path.join(self.root_cc3m, 'validation_imgtxt.tsv')
+            data_file = os.path.join(self.root_cc3m, 'validation_imgtxt_cleaned.tsv')
 
         data = pd.read_csv(data_file, delimiter='\t', header=0)
         if datasize != "full":
@@ -1322,17 +1324,22 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
 
-    datasize_coco = 500
-    datasize_cc3m = 500
+    datasize_coco = "full"
+    datasize_cc3m = 0
+    save_file_name = "coco_train"
 
     # データセットの初期化
     dataset = UnifiedDataset(data_mode='train', transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
     print("Dataset length:", len(dataset))
 
-    # save dataset
-    with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
-    # with open(f"dataset/dataset_cache/test_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+    with open(f"dataset/dataset_cache/{save_file_name}.pkl", "wb") as f:
         pickle.dump(dataset, f)
+
+
+    # # save dataset
+    # with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+    # # with open(f"dataset/dataset_cache/test_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
+    #     pickle.dump(dataset, f)
 
     exit()
 
