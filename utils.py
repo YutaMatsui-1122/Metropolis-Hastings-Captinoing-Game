@@ -18,7 +18,7 @@ import random
 from transformers import GPT2Tokenizer
 import torch
 from torch.utils.data import Dataset
-import os
+import os, math
 from PIL import Image
 from pycocotools.coco import COCO
 # from _dataloader import _get_coco_file_paths
@@ -56,6 +56,48 @@ def tanh_annealing(epoch, initial_beta=0.01, final_beta=1.0, epochs=100, scale=1
     # Using the scale parameter to adjust the sharpness of the change
     beta = (final_beta - initial_beta) * (np.tanh(((epoch / epochs) - center) * scale) + 1) / 2 + initial_beta
     return beta
+
+
+class LoRALayer(nn.Module):
+    def __init__(self, original_linear_layer, r=4, alpha=16, dropout=0.1):
+        super(LoRALayer, self).__init__()
+        # 元の線形層を保存
+        self.original_linear = original_linear_layer
+        self.r = r
+        self.alpha = alpha
+        self.scaling = self.alpha / self.r
+        
+        # LoRAの低ランク行列 A と B の初期化
+        # A はランダムなガウス分布で初期化、B はゼロ初期化
+        self.lora_A = nn.Linear(original_linear_layer.in_features, r, bias=False)
+        nn.init.normal_(self.lora_A.weight, mean=0.0, std=1.0 / math.sqrt(self.lora_A.in_features)) # ガウス初期化(He Initialization)
+        self.lora_B = nn.Linear(r, original_linear_layer.out_features, bias=False)
+        nn.init.zeros_(self.lora_B.weight)  # ゼロ初期化
+        
+        # ドロップアウトの追加
+        self.lora_dropout = nn.Dropout(dropout)
+        
+        # 元の線形層のパラメータは更新しない（凍結）
+        for param in self.original_linear.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        # 元の線形層の出力
+        output = self.original_linear(x)
+        # LoRAの出力（ドロップアウト適用）
+        lora_output = self.lora_B(self.lora_A(x))
+        lora_output = self.lora_dropout(lora_output) * self.scaling
+        # LoRA出力を元の出力に追加
+        return output + lora_output
+    
+# LoRAを適用する関数
+def apply_lora_to_layer(module, layer_name, r=2, alpha=32, dropout=0.1):
+    # 指定された層を取得し、LoRAラッピングを適用
+    layer = getattr(module, layer_name)
+    lora_layer = LoRALayer(layer, r=r, alpha=alpha, dropout=dropout)
+    
+    # モジュールの元の層をLoRAで置き換える
+    setattr(module, layer_name, lora_layer)
 
 class CocoDataset(Dataset):
     def __init__(self, root: str, gpt2_type: str = "gpt2", data_mode: str = "train" , transform=None, prefix_length = 40, normalize_prefix = True, datasize = "full", use_imageid = False):
@@ -1324,17 +1366,17 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
 
-    datasize_coco = "full"
+    datasize_coco = 10000
     datasize_cc3m = 0
-    save_file_name = "coco_train"
+    data_mode = "train"
+    save_file_name = f"coco_{datasize_coco}_cc3m_{datasize_cc3m}_{data_mode}"
 
     # データセットの初期化
-    dataset = UnifiedDataset(data_mode='train', transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
+    dataset = UnifiedDataset(data_mode=data_mode, transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
     print("Dataset length:", len(dataset))
 
     with open(f"dataset/dataset_cache/{save_file_name}.pkl", "wb") as f:
         pickle.dump(dataset, f)
-
 
     # # save dataset
     # with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:

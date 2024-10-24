@@ -1,25 +1,20 @@
 import copy
 import argparse
-
 import numpy as np
 import pandas as pd
-from peft import get_peft_model, LoraConfig, TaskType
-
-from ProbVLM.src.networks import *
-import clip
-from CLIP_prefix_caption.train import *
 from utils import *
-import argparse
-from ProbVLM.src.ds.simple_tokenizer import SimpleTokenizer as _Tokenizer
 from update_models import *
-import torch.multiprocessing as mp
 from eval_probvlm_acceptance_prob import *
-
-_tokenizer = _Tokenizer()
+import clip
+from transformers import GPT2Tokenizer
+# from ProbVLM.src.networks import BayesCap_for_CLIP
+# from CLIP_prefix_caption.train import ClipCaptionPrefix
 
 class OneAgent(nn.Module):
     def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, te_alpha_beta=0.5, td_alpha_beta=0.5, te_train_mode="DERPP", td_train_mode="DERPP", clip_arch = "ViT-B/32"):
         super().__init__()
+        from ProbVLM.src.networks import BayesCap_for_CLIP # import ProbVLM network
+        from CLIP_prefix_caption.train import ClipCaptionPrefix # import CLIP captioning network
         self.agent_name = agent_name
         self.device = device
         self.ProbVLM_Net = BayesCap_for_CLIP(inp_dim=512, out_dim=512, hid_dim=256, num_layers=3, p_drop=0.01,)
@@ -99,8 +94,20 @@ class OneAgent(nn.Module):
         self.ClipCap.to(self.device)
 
     def lora_setting(self):
-        peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["c_fc"])
-        self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)
+        from peft import get_peft_model, LoraConfig, TaskType
+        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["10.mlp.c_fc", "11.mlp.c_fc"])
+        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["c_fc"])
+        # self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)     
+           
+        for param in self.ClipCap.clip_project._modules["model"][0].parameters():
+            param.requires_grad = False # freeze the first layer of the model
+        apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=2, alpha=32, dropout=0.1) # apply LoRA to the second layer of the model
+        # for param in self.ClipCap.clip_project.named_parameters():
+        for param in self.ClipCap.gpt.parameters():
+            param.requires_grad = False
+
+        self = self.to(self.device)
+
 
     def communication_field_setup(self, dataloader_MHNG_fix, dataloader_MHNG_shuffle, MH_iter, annealing_beta="None", mode="MHNG"):
         self.dataloader_MHNG_fix = dataloader_MHNG_fix
@@ -176,8 +183,11 @@ class OneAgent(nn.Module):
                 mu_Li, alpha_Li, beta_Li = self.text_encoder(before_self_w[index])
                 
                 # calculate p(z|w,\phi)
-                p_li = -self.GGL(mu_Li, alpha_Li, beta_Li, self.z[index])
-                p_sp = -self.GGL(mu_Sp, alpha_Sp, beta_Sp, self.z[index])
+                # p_li = -self.GGL(mu_Li, alpha_Li, beta_Li, self.z[index])
+                # p_sp = -self.GGL(mu_Sp, alpha_Sp, beta_Sp, self.z[index])
+                p_li = self.GGLogLikelihood(mu_Li, alpha_Li, beta_Li, self.z[index])
+                p_sp = self.GGLogLikelihood(mu_Sp, alpha_Sp, beta_Sp, self.z[index])
+
                 # calculate acceptance rate r
                 
                 if self.mode == "MHNG":
@@ -206,19 +216,22 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " initialize buffer")
 
         self.td_buffer = ClipCapBuffer(buffer_size=buffer_size)
-
+        mse_loss = nn.MSELoss()
+        mu_z_mse = 0
         with torch.no_grad():
             for batch in dataloader:
                 img, caption, vlm_token, gpt_token, gpt_mask, _  = batch
                 img, gpt_token, gpt_mask = img.to(self.device), gpt_token.to(self.device), gpt_mask.to(self.device)
                 mu_img, alpha_img, sigma_img, z = self.image_encoder(img)
+                mu_z_mse += mse_loss(mu_img, z)
                 img = img.cpu()
-                outputs = self.ClipCap(gpt_token, mu_img, gpt_mask)
+                outputs = self.ClipCap(gpt_token, z, gpt_mask)
                 logits = outputs.logits[:, dataloader.dataset.prefix_length - 1: -1]
                 task_index = torch.tensor([0] * img.shape[0], device="cpu")
-                self.td_buffer.add(mu_img.detach().cpu(), vlm_token.cpu(), gpt_token.cpu(), gpt_mask.cpu(), logits.detach().cpu(), task_index)
+                self.td_buffer.add(z.detach().cpu(), vlm_token.cpu(), gpt_token.cpu(), gpt_mask.cpu(), logits.detach().cpu(), task_index)
                 if self.td_buffer.num_seen_examples > buffer_size:
                     break
+        print("mu_z_mse", mu_z_mse/len(dataloader))
     
     def initialize_te_buffer(self, dataloader, buffer_size):
         self.ProbVLM_Net.txt_BayesCap.eval()
@@ -238,7 +251,6 @@ class OneAgent(nn.Module):
                 if self.te_buffer.num_seen_examples > buffer_size:
                     break
 
-
     def update_text_decoder(self, em_epoch):
         print("Agent", self.agent_name, " update text decoder")
         self.ClipCap.train()
@@ -251,7 +263,7 @@ class OneAgent(nn.Module):
         eval_probvlm_acceptance_prob(self, self.preprocess)
         self.ProbVLM_Net.train()
         # updated_probvlm = update_probvlm(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-6, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5)
-        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=0, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
+        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=1, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
         self.ProbVLM_Net = updated_probvlm.eval()
         eval_probvlm_acceptance_prob(self, self.preprocess)
     

@@ -71,7 +71,7 @@ for i in [45]:
     # print(f"epoch-{i}.pth")
     # eval_probvlm_acceptance_prob(agentA, agentA.preprocess)
 
-    agentA.initialize_te_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
+    agentA.initialize_td_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
 
     agentA.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, args.MH_iter, args.annealing, args.mode)
     agentA.save_dir = f"exp/{exp_name}"
@@ -79,4 +79,6 @@ for i in [45]:
 
     agentA.perception()
     agentA.initialize_sign()
-    agentA.update_text_encoder(0)
+    # agentA.update_text_encoder(0)
+    agentA.lora_setting()
+    agentA.update_text_decoder(0)

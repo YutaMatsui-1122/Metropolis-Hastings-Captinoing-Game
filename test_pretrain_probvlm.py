@@ -6,9 +6,7 @@ from update_models import *
 from ProbVLM.src.losses import *
 
 argparser = argparse.ArgumentParser()
-argparser.add_argument('--clip_model_type', default="ViT-B/32", choices=('RN50', 'RN101', 'RN50x4', 'ViT-B/32'))
-argparser.add_argument('--dataset', default="COCO", choices=("COCO", "CC3M"))
-argparser.add_argument('--epoch', default=100, type=int)
+argparser.add_argument('--clip_model_type', default="ViT-B/32", choices=('ViT-B/32', 'ViT-B/16', ))
 argparser.add_argument('--batch_size', default=64, type=int)
 argparser.add_argument('--num_workers', default=1, type=int)
 argparser.add_argument('--device', default="cuda:3")
@@ -16,12 +14,12 @@ args = argparser.parse_args()
 
 clip_model, preprocess = clip.load(args.clip_model_type, device="cuda")
 
-conceptual_pretrain_file = "conceptual_test_dataset_10000"
+conceptual_pretrain_file = "cc3m_test"
 with open(f"dataset/dataset_cache/{conceptual_pretrain_file}.pkl", "rb") as f:
     conceptual_pretrain_dataset = pickle.load(f)
     conceptual_pretrain_dataset.prefix_length = 10
 
-coco_train_file = "coco_test_dataset_5000"
+coco_train_file = "coco_test_dataset"
 with open(f"dataset/dataset_cache/{coco_train_file}.pkl", "rb") as f:
     train_dataset = pickle.load(f)
     train_dataset.prefix_length = 10
@@ -39,7 +37,7 @@ T1=0
 T2=1
 cross_modal_lambda=1
 
-save_dir = f"models/objective_test_derpp_cc3m2coco"
+save_dir = f"models/official_model/probvlm/{agent_dataset}"
 
 
 device = torch.device(args.device)
@@ -47,24 +45,26 @@ device = torch.device(args.device)
 Cri = TempCombLoss(reduction="sum")
 
 # for i in [1, 2, 3, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46, 49, 52, 55, 58, 61, 64, 67, 70, 73, 76, 79, 82, 85, 88, 91, 94, 97, 100]:
-for i in [1, 3, 6, 9, 15, 30, 45, 60, 75, 90, 100]:
-    agent = OneAgent(agent_name='A')
-    file_base = "probvlm_A-epoch"
+for i in [1, 3, 6, 9, 15, 30, 45, 48, 51]:
+    agent = OneAgent(agent_name='A', device=device, clip_arch=args.clip_model_type)
+    file_base = "probvlm_0.2_0.2_20_arch_ViT-B-16-epoch"
     # agent.load_pretrain(probvlm_path=f"{save_dir}/probvlm_0.2_0.3_20-epoch-{i}.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
     agent.load_pretrain(probvlm_path=f"{save_dir}/{file_base}-{i}.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
     print(f"ProbVLM model : {file_base}-{i}.pth")
     agent = agent.to(args.device)
-    for loader_name, loader in [("coco", coco_loader),]:
+    for loader_name, loader in [("cc3m", cc3m_loader),]:
         test_loss = 0
         test_loss_i = 0
         test_loss_t = 0
         test_loss_i2t = 0
         test_loss_t2i = 0
         for idx, batch in tqdm(enumerate(loader), total=len(loader), desc="eval"):
-            image = batch[0].to(args.device)
-            vlm_token = batch[2].to(args.device)
-            index = batch[5]
+            # image = batch[0].to(args.device)
+            # vlm_token = batch[2].to(args.device)
             
+            image = batch["image"].to(args.device)
+            vlm_token = batch["vlm_token"].to(args.device)
+
             with torch.no_grad():
                 xfI = agent.CLIP_Net.encode_image(image)
                 xfT = agent.CLIP_Net.encode_text(vlm_token)

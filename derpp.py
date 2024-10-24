@@ -15,8 +15,8 @@ argparser.add_argument('--speaker_agent', default="None", choices=("None", "coco
 argparser.add_argument('--alpha_beta', type=float, default=0.5)
 
 import pandas as pd
-sign_df = pd.read_csv("exp/mhcg_derpp_1/A/agent_A_sign.csv")
-print(sign_df["EM_0_MH_9"].tolist()[:10])
+sign_df = pd.read_csv("exp/mhcg_derpp_1/A/agent_A_proposed_w.csv")
+print(sign_df["EM_5_MH_9"].tolist()[:10])
 
 args = argparser.parse_args()
 
@@ -24,17 +24,21 @@ os.makedirs(f"models/{args.save_dir}", exist_ok=True)
 
 device = torch.device(args.device)
 
-agent = OneAgent(agent_name='A', device=device, td_update_epochs=10, der_alpha=args.alpha_beta, derpp_beta=args.alpha_beta, temperature=0.7)
-agent = agent.to(device)
 
-agent.save_dir = f"models/{args.save_dir}"
 
 # args.speaker_agentの逆のエージェントのパラメータをロード
 if args.speaker_agent == "None" or args.speaker_agent == "coco":
-    agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
+    agent = OneAgent(agent_name='A', device=device, td_update_epochs=10, temperature=0.7, clip_arch="ViT-B/32", td_train_mode="DERPP", td_alpha_beta=args.alpha_beta)
+    agent = agent.to(device)
+    agent.save_dir = f"models/{args.save_dir}"
+    # agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20_arch_ViT-B-16-epoch-45.pth", clipcap_path="models/clipcap_vit16_cc3m/clipcap_009.pt", strict_clipcap=False)
+    agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20-epoch-69.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
     finetune_train_file = "communication_coco_5000_cc3m_5000"
     pretrain_train_file = "conceptual_train_dataset_30000"
 else:
+    agent = OneAgent(agent_name='A', device=device, td_update_epochs=10, temperature=0.7, clip_arch="ViT-B/32", td_train_mode="DERPP")
+    agent = agent.to(device)
+    agent.save_dir = f"models/{args.save_dir}"
     agent.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
     finetune_train_file =  f"communication_coco_5000_cc3m_5000"
     pretrain_train_file = "coco_train_dataset_30000"
@@ -61,14 +65,14 @@ agent.lora_setting()
 agent.perception()
 agent.initialize_td_buffer(pretrain_train_dataloader, buffer_size=10000)
 
-for em_epoch in range(10):
+for em_epoch in [5, 7, 9]:
     os.makedirs(f"models/{args.save_dir}/EM_{em_epoch}", exist_ok=True)
     agent.save_dir = f"models/{args.save_dir}/EM_{em_epoch}"
     previous_caption = [finetune_train_dataset.dataset[i]["caption"] for i in range(len(finetune_train_dataset))]
     previous_caption = [agent.dataloader_MHNG_fix.dataset.dataset[i]["caption"] for i in range(len(agent.dataloader_MHNG_fix.dataset))]
     previous_gpt_token = [agent.dataloader_MHNG_fix.dataset.dataset[i]["gpt_token"] for i in range(len(agent.dataloader_MHNG_fix.dataset))]
-    print(previous_caption[:3])
-    print(previous_gpt_token[:3])
+    print(previous_caption[:50], previous_caption[-50:])
+    print(previous_gpt_token[:50], previous_gpt_token[-50:])
 
     for i in range(len(agent.dataloader_MHNG_fix.dataset)):
         agent.dataloader_MHNG_fix.dataset.dataset[i]["caption"] = sign_df[f"EM_{em_epoch}_MH_9"][i]
@@ -76,5 +80,8 @@ for em_epoch in range(10):
     
     current_caption = [agent.dataloader_MHNG_fix.dataset.dataset[i]["caption"] for i in range(len(agent.dataloader_MHNG_fix.dataset))]
     current_gpt_token = [agent.dataloader_MHNG_fix.dataset.dataset[i]["gpt_token"] for i in range(len(agent.dataloader_MHNG_fix.dataset))]
+
+    print(current_caption[:50], current_caption[-50:])
+    print(current_gpt_token[:50], current_gpt_token[-50:])
 
     agent.update_text_decoder(em_epoch)

@@ -128,7 +128,7 @@ def update_clipcap(CLIP_Net, train_loader, test_loader, model, save_dir, epochs,
     return model, loss_list, test_loss_list
 
 def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5):
-    print("start training clipcap with alpha:", alpha, "beta:", beta)
+    print("start training clipcap with alpha:", alpha, "beta:", beta, "train_mode:", train_mode)
     clipcap = clipcap.to(device)
     clipcap.train()
 
@@ -139,18 +139,37 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
         os.makedirs(save_dir)
 
     warmup_steps = int(warmup_steps_percent * epochs * len(train_loader_shuffle))
-    params = list(clipcap.parameters())
+    print("warmup_steps", warmup_steps)
 
-    optimizer = AdamW(params, lr=lr)
+    params1 = list(clipcap.named_parameters())
+    params2 = list(clipcap.parameters())
+    # optimizer = AdamW(params, lr=lr)
+    # optimizer = AdamW(clipcap.parameters(), lr=lr)
+    # param1からパラメータを取り出す
+    # params1_params = [p for n, p in params1]
+    optimizer = AdamW(params2, lr=lr)
+    # オプティマイザのパラメータを表示
+    for group in optimizer.param_groups:
+        print(group.keys())
+        for param in group["params"]:
+            print(param.shape)
 
     # 学習されるパラメータの数を表示
-    num_params = sum(p.numel() for p in params if p.requires_grad)
+    # num_params = sum(p.numel() for p in params if p.requires_grad)
+    num_params = sum(p.numel() for n, p in params1 if p.requires_grad)
+    print(f"更新されるパラメータの総数: {num_params}")
+
+    num_params = sum(p.numel() for p in params2 if p.requires_grad)
     print(f"更新されるパラメータの総数: {num_params}")
 
     # 更新されるパラメータの詳細を表示
-    for i, param in enumerate(params):
-        if param.requires_grad:
-            print(f"パラメータ {i}: {param.shape}, 更新される: {param.requires_grad}")
+    for i, (n, param) in enumerate(params1):
+        print(f"パラメータ {n}: {param.shape}, 更新される: {param.requires_grad}")
+        # print name of the parameter
+    
+    for i, param in enumerate(params2):
+        print(f"パラメータ {i}: {param.shape}, 更新される: {param.requires_grad}")
+        # print name of the parameter
 
     scheduler = get_linear_schedule_with_warmup(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader_shuffle)
@@ -160,8 +179,8 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
     loss_der_list = []
     loss_derpp_list = []
 
-    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.6)
-    print("before training(finetune)", generated_text)
+    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.63)
+    print("before training", generated_text)
 
     for epoch in range(epochs):
         print(f">>> Training epoch {epoch}")
@@ -193,7 +212,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
             # Experience replay (ER)
             if train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP":
                 if idx == 0 and epoch == 0:
-                    print("reservoir")
+                    print("use reservoir")
                 buffer.add(prefix.detach().cpu(), vlm_token.detach().cpu(), gpt_token.detach().cpu(), gpt_mask.detach().cpu(), logits.detach().cpu(), task_index)
 
             # Dark experience replay (DER)
@@ -206,6 +225,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
 
                 # Dark experience replay (DER)
                 # Use Euclidean distance between the logits of the current model and the logits of the model trained on the buffer
+
                 loss_der = alpha * nnf.mse_loss(outputs_logits, logits)
                 loss_der.backward(retain_graph=True)
 
@@ -240,7 +260,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
             progress.update()
 
             loss_list.append(loss.item())
-        generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.6)
+        generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.63)
         print("epoch(finetune)", epoch, generated_text)
             
         if train_mode != "None":
@@ -249,7 +269,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
             print(f"loss, der, derpp: {eph_loss/len(train_loader_shuffle)}, {eph_der_loss/len(train_loader_shuffle)/alpha}, {eph_derpp_loss/len(train_loader_shuffle)/beta}")
         elif "DER" in train_mode:
             print(f"loss, der: {eph_loss/len(train_loader_shuffle)}, {eph_der_loss/len(train_loader_shuffle)/alpha}")
-        elif "ER" in train_mode or "ER_RS" in train_mode:
+        elif "ER" in train_mode or "ER_RS" in train_mode or train_mode == "None":
             print(f"loss: {eph_loss/len(train_loader_shuffle)}")
 
         progress.close()
@@ -262,7 +282,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                 clipcap.state_dict(),
                 os.path.join(save_dir, f"{output_prefix}-{epoch:03d}.pt"),
             )
-        s = time.time()
+        
 
     return clipcap
 
@@ -357,10 +377,6 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
 
     optimizer = torch.optim.Adam(model_params, lr=lr)
 
-    # save before training model
-    torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-0.pth"))
-
-
     loss_list = []
     loss_der_list = []
     loss_derpp_list = []
@@ -368,7 +384,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
     loss_fine_tune_test_list = []
     
     # for eph in tqdm(range(epochs)):
-    for eph in tqdm(range(1, epochs+1)):
+    for eph in tqdm(range(epochs)):
         eph_loss = 0
         eph_der_loss = 0
         eph_derpp_loss = 0
@@ -408,7 +424,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
             # set task index to epoch
             task_index = torch.tensor([eph+1] * vlm_token.shape[0], device="cpu")
             if train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP":
-                if idx == 0 and eph == 0:
+                if idx == 0 and eph == 1:
                     print("use reservoir")
                 # buffer.add(prefix.detach().cpu(), vlm_token.detach().cpu(), gpt_token.detach().cpu(), gpt_mask.detach().cpu(), logits.detach().cpu(), task_index)
                 buffer.add(text_emb.detach().cpu(), z.detach().cpu(), txt_mu.detach().cpu(), txt_alpha.detach().cpu(), txt_beta.detach().cpu(), task_index)
@@ -422,7 +438,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
                 loss_der = alpha * nnf.mse_loss(txt_mu_pred, txt_mu) + nnf.mse_loss(txt_alpha_pred, txt_alpha) + nnf.mse_loss(txt_beta_pred, txt_beta)
                 loss_der.backward(retain_graph=True)
 
-                if idx == 0 and eph == 1:
+                if idx == 0 and eph == 0:
                     print("mu", txt_mu[0][:10], txt_mu_pred[0][:10])
                     print("alpha", txt_alpha[0][:10], txt_alpha_pred[0][:10])
                     print("beta", txt_beta[0][:10], txt_beta_pred[0][:10])
@@ -460,9 +476,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_der.npy"), np.array(loss_der_list))
         np.save(os.path.join(save_dir, f"{output_prefix}_loss_derpp.npy"), np.array(loss_derpp_list))
 
-
-
-        if (eph+1) % save_every == 0 or eph == 0 or eph == epochs-1:
+        if eph == epochs - 1:
             torch.save(BayesCap_Net.state_dict(), os.path.join(save_dir, f"{output_prefix}-epoch-{eph}.pth"))
 
         if pretrain_test_loader is not None:

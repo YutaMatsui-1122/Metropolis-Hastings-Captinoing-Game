@@ -278,8 +278,8 @@ if __name__ == '__main__':
 
     agent_clip_arch = {"A": "ViT-B/16", "B": "ViT-B/32"}
 
-    for epoch in [args.em_iter]:
-        for agent_name in ['A', 'B']:
+    for epoch in [10, 9, 8, 7, 6]:
+        for agent_name in ['A']:
             agent = OneAgent(agent_name=agent_name, device=device,temperature=temperature, clip_arch=agent_clip_arch[agent_name])
             agent = agent.to(device)
 
@@ -291,7 +291,8 @@ if __name__ == '__main__':
                 if agent_name == 'A':
                     candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m_temperature_{temperature}_vit16.json"
                     # agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
-                    agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/clipcap_vit16_cc3m/clipcap_latest.pt", strict_clipcap=False)
+                    agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path=f"models/clipcap_vit16_cc3m/clipcap_{epoch:03d}.pt", strict_clipcap=False)
+                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m_temperature_{temperature}_vit16_epoch_{epoch}.json"
                 else:
                     candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_coco_temperature_{temperature}.json"
                     agent.load_pretrain(probvlm_path="models/probVLM_coco_prefix-035.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
@@ -326,5 +327,4 @@ if __name__ == '__main__':
                 json.dump(candidate, f, indent=4)
             
             print(f"Saved the candidate to {candidate_path}")
-        if use_official_model:
-            break
+        

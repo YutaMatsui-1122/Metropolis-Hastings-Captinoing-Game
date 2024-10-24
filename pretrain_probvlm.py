@@ -5,7 +5,7 @@ from utils import *
 from update_models import *
 
 argparser = argparse.ArgumentParser()
-argparser.add_argument('--clip_model_type', default="ViT-B/32", choices=('RN50', 'RN101', 'RN50x4', 'ViT-B/32', 'ViT-B/16', ))
+argparser.add_argument('--clip_model_type', default="ViT-B/32", choices=('ViT-B/32', 'ViT-B/16', ))
 argparser.add_argument('--dataset', default="COCO", choices=("COCO", "CC3M"))
 argparser.add_argument('--epoch', default=100, type=int)
 argparser.add_argument('--batch_size', default=64, type=int)
@@ -16,13 +16,21 @@ argparser.add_argument('--annealing_epoch', default=20, type=int)
 argparser.add_argument('--device', default="cuda:0")
 args = argparser.parse_args()
 
-if args.dataset == "COCO":
+debug = False
+
+if debug == True:
+    with open("dataset/dataset_cache/cc3m_test.pkl", "rb") as f:
+        train_dataset = pickle.load(f)
+        train_dataset.prefix_length = 10
+elif args.dataset == "COCO":
     with open("dataset/dataset_cache/coco_train.pkl", "rb") as f:
         train_dataset = pickle.load(f)
+        train_dataset.prefix_length = 10
 
 elif args.dataset == "CC3M":
     with open("dataset/dataset_cache/cc3m_train.pkl", "rb") as f:
         train_dataset = pickle.load(f)
+        train_dataset.prefix_length = 10
 
 else:
     raise ValueError("Invalid dataset")
@@ -33,7 +41,9 @@ print("train_dataset:", len(train_dataset))
 
 
 save_dir = f"models/official_model/probvlm/{args.dataset}"
-output_prefix = f"probvlm_{args.cross_modal_lambda_init}_{args.cross_modal_lambda_final}_{args.annealing_epoch}_arch_{args.clip_model_type}"
+arch_name = args.clip_model_type.replace("/", "-")
+output_prefix = f"probvlm_{args.cross_modal_lambda_init}_{args.cross_modal_lambda_final}_{args.annealing_epoch}_arch_{arch_name}"
+print("output_prefix:", output_prefix)
 
 # test_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
@@ -45,7 +55,7 @@ output_prefix = f"probvlm_{args.cross_modal_lambda_init}_{args.cross_modal_lambd
 # import time
 
 # for clip_arch in ["ViT-B/32", "ViT-B/16",]:
-#     agent = OneAgent(agent_name='A', device="cuda", temperature=0.62, clip_arch=clip_arch)
+#     agent = OneAgent(agent_name='A', device=args.device, temperature=0.62, clip_arch=clip_arch)
 #     device = torch.device(args.device)
 
 #     s = time.time()

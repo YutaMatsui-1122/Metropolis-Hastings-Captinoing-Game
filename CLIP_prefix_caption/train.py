@@ -247,7 +247,6 @@ class ClipCaptionModel(nn.Module):
             self.clip_project = TransformerMapper(prefix_size, self.gpt_embedding_size, prefix_length,
                                                                      clip_length, num_layers)
 
-
 class ClipCaptionPrefix(ClipCaptionModel):
 
     def parameters(self, recurse: bool = True):
