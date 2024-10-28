@@ -35,48 +35,63 @@ if "debug" in exp_name:
     observation_file = "communication_coco_50_cc3m_50"
     args.buffer_size = 50
 else:
-    observation_file = f"communication_coco_5000_cc3m_5000"
+    observation_file = f"communication_coco_500_cc3m_500"
     # observation_file = "communication_coco_0_cc3m_10000"
 with open(f"dataset/dataset_cache/{observation_file}.pkl", "rb") as f:
     observationA_dataset = pickle.load(f)
     observationA_dataset.prefix_length = 10
 
-conceptual_pretrain_file = "conceptual_train_dataset_30000"
-with open(f"dataset/dataset_cache/{conceptual_pretrain_file}.pkl", "rb") as f:
-    conceptual_pretrain_dataset = pickle.load(f)
-    conceptual_pretrain_dataset.prefix_length = 10
+# conceptual_pretrain_file = "conceptual_train_dataset_30000"
+# with open(f"dataset/dataset_cache/{conceptual_pretrain_file}.pkl", "rb") as f:
+#     conceptual_pretrain_dataset = pickle.load(f)
+#     conceptual_pretrain_dataset.prefix_length = 10
 
-coco_pretrain_file = "coco_train_dataset_30000"
-with open(f"dataset/dataset_cache/{coco_pretrain_file}.pkl", "rb") as f:
-    coco_pretrain_dataset = pickle.load(f)
-    coco_pretrain_dataset.prefix_length = 10
+# coco_pretrain_file = "coco_train_dataset_30000"
+# with open(f"dataset/dataset_cache/{coco_pretrain_file}.pkl", "rb") as f:
+#     coco_pretrain_dataset = pickle.load(f)
+#     coco_pretrain_dataset.prefix_length = 10
 
 observationB_dataset = copy.deepcopy(observationA_dataset)
 
 print("observationA_dataset:", len(observationA_dataset))
 
-conceptual_pretrain_loader = torch.utils.data.DataLoader(conceptual_pretrain_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
-coco_pretrain_loader = torch.utils.data.DataLoader(coco_pretrain_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
+# conceptual_pretrain_loader = torch.utils.data.DataLoader(conceptual_pretrain_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
+# coco_pretrain_loader = torch.utils.data.DataLoader(coco_pretrain_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
 
 coco_test_loader_fix_A = torch.utils.data.DataLoader(observationA_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
 coco_test_loader_shuffle_A = torch.utils.data.DataLoader(observationA_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=args.pin_memory)
 coco_test_loader_fix_B = torch.utils.data.DataLoader(observationB_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
 coco_test_loader_shuffle_B = torch.utils.data.DataLoader(observationB_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=args.pin_memory)
 
-for i in [45]:
-    agentA = OneAgent(agent_name='A', device=args.device, td_update_epochs=args.td_update_epochs, te_update_epochs=args.te_update_epochs, temperature=args.temperature, te_alpha_beta=args.agentA_te_alpha_beta, td_alpha_beta=args.agentA_td_alpha_beta, clip_arch="ViT-B/16")
-    agentA = agentA.to(args.device)
+agentA = OneAgent(agent_name='A', device=args.device, td_update_epochs=args.td_update_epochs, te_update_epochs=args.te_update_epochs, temperature=args.temperature, te_alpha_beta=args.agentA_te_alpha_beta, td_alpha_beta=args.agentA_td_alpha_beta, clip_arch="ViT-B/32")
+agentA = agentA.to(args.device)
 
-    agentA.load_pretrain(probvlm_path=f"models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20_arch_ViT-B-16-epoch-{i}.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
-    # print(f"epoch-{i}.pth")
-    # eval_probvlm_acceptance_prob(agentA, agentA.preprocess)
+agentA.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
 
-    agentA.initialize_te_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
+agentB = OneAgent(agent_name='B', device=args.device, td_update_epochs=args.td_update_epochs, te_update_epochs=args.te_update_epochs, temperature=args.temperature, te_alpha_beta=args.agentB_te_alpha_beta, td_alpha_beta=args.agentB_td_alpha_beta, clip_arch="ViT-B/32")
+agentB = agentB.to(args.device)
 
-    agentA.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, args.MH_iter, args.annealing, args.mode)
-    agentA.save_dir = f"exp/{exp_name}"
-    os.makedirs(agentA.save_dir, exist_ok=True)
+agentB.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20-epoch-69.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
+# print(f"epoch-{i}.pth")
+# eval_probvlm_acceptance_prob(agentA, agentA.preprocess)
 
-    agentA.perception()
-    agentA.initialize_sign()
-    agentA.update_text_encoder(0)
+# agentA.initialize_te_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
+
+agentA.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, args.MH_iter, args.annealing, args.mode)
+agentB.communication_field_setup(coco_test_loader_fix_B, coco_test_loader_shuffle_B, args.MH_iter, args.annealing, args.mode)
+agentA.save_dir = f"exp/{exp_name}"
+os.makedirs(agentA.save_dir, exist_ok=True)
+agentA.perception()
+agentB.perception()
+agentA.initialize_sign()
+agentB.initialize_sign()
+for annealing_value in [0.98, 0.985, 0.99, 0.995, 0.999, 1, 1]:
+# for annealing_value in [1, 1, 1, 1, 1, 1, 1]:
+    for j in range(10):    
+        print("\n annealing_value:", annealing_value)
+        proposed_wB = agentB.propose()
+        proposed_wA = agentA.propose()
+        agentA.annealing_value = annealing_value
+        agentB.annealing_value = annealing_value
+        agentA.judge(proposed_wB)
+        agentB.judge(proposed_wA)

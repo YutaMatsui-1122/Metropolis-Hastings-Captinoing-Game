@@ -127,7 +127,7 @@ def update_clipcap(CLIP_Net, train_loader, test_loader, model, save_dir, epochs,
 
     return model, loss_list, test_loss_list
 
-def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5):
+def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5, reserovoir = True):
     print("start training clipcap with alpha:", alpha, "beta:", beta, "train_mode:", train_mode)
     clipcap = clipcap.to(device)
     clipcap.train()
@@ -139,37 +139,19 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
         os.makedirs(save_dir)
 
     warmup_steps = int(warmup_steps_percent * epochs * len(train_loader_shuffle))
-    print("warmup_steps", warmup_steps)
-
-    params1 = list(clipcap.named_parameters())
-    params2 = list(clipcap.parameters())
+    params = list(clipcap.parameters())
     # optimizer = AdamW(params, lr=lr)
     # optimizer = AdamW(clipcap.parameters(), lr=lr)
     # param1からパラメータを取り出す
     # params1_params = [p for n, p in params1]
-    optimizer = AdamW(params2, lr=lr)
-    # オプティマイザのパラメータを表示
-    for group in optimizer.param_groups:
-        print(group.keys())
-        for param in group["params"]:
-            print(param.shape)
+    optimizer = AdamW(params, lr=lr)
 
-    # 学習されるパラメータの数を表示
-    # num_params = sum(p.numel() for p in params if p.requires_grad)
-    num_params = sum(p.numel() for n, p in params1 if p.requires_grad)
-    print(f"更新されるパラメータの総数: {num_params}")
-
-    num_params = sum(p.numel() for p in params2 if p.requires_grad)
-    print(f"更新されるパラメータの総数: {num_params}")
 
     # 更新されるパラメータの詳細を表示
-    for i, (n, param) in enumerate(params1):
-        print(f"パラメータ {n}: {param.shape}, 更新される: {param.requires_grad}")
-        # print name of the parameter
-    
-    for i, param in enumerate(params2):
-        print(f"パラメータ {i}: {param.shape}, 更新される: {param.requires_grad}")
-        # print name of the parameter
+    for i, param in enumerate(params):
+        if param.requires_grad:
+            print(f"パラメータ {i}: {param.shape}, 更新される: {param.requires_grad}")
+
 
     scheduler = get_linear_schedule_with_warmup(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader_shuffle)
@@ -196,6 +178,8 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
             caption = batch["caption"]
             img, gpt_token, gpt_mask = img.to(device), gpt_token.to(device), gpt_mask.to(device)
 
+            batch_size = img.shape[0]
+
             prefix = agent_z[index].to(device)
             
             outputs = clipcap(gpt_token, prefix, gpt_mask)
@@ -210,14 +194,14 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
             # set task index to epoch  
             task_index = torch.tensor([epoch+1] * img.shape[0], device="cpu")
             # Experience replay (ER)
-            if train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP":
+            if (train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP") and reserovoir:
                 if idx == 0 and epoch == 0:
                     print("use reservoir")
                 buffer.add(prefix.detach().cpu(), vlm_token.detach().cpu(), gpt_token.detach().cpu(), gpt_mask.detach().cpu(), logits.detach().cpu(), task_index)
 
             # Dark experience replay (DER)
             if train_mode == "DER" or train_mode == "DERPP":
-                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(16)
+                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(batch_size)
                 emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
 
                 outputs = clipcap(gpt_token, emb, gpt_mask)
@@ -236,7 +220,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                     print("dark knowledge loss", loss_der.item(), "alpha", alpha)
 
             if train_mode == "DERPP" or train_mode == "ER" or train_mode == "ER_RS":
-                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(16)
+                emb, vlm_token, gpt_token, gpt_mask, logits = buffer.sample(batch_size)
                 emb, vlm_token, gpt_token, gpt_mask, logits = emb.to(device), vlm_token, gpt_token.to(device), gpt_mask.to(device), logits.to(device)
 
                 outputs = clipcap(gpt_token, emb, gpt_mask)
@@ -283,7 +267,6 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                 os.path.join(save_dir, f"{output_prefix}-{epoch:03d}.pt"),
             )
         
-
     return clipcap
 
 def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-4, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=1e-4):

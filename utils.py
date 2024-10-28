@@ -70,7 +70,6 @@ class LoRALayer(nn.Module):
         # LoRAの低ランク行列 A と B の初期化
         # A はランダムなガウス分布で初期化、B はゼロ初期化
         self.lora_A = nn.Linear(original_linear_layer.in_features, r, bias=False)
-        nn.init.normal_(self.lora_A.weight, mean=0.0, std=1.0 / math.sqrt(self.lora_A.in_features)) # ガウス初期化(He Initialization)
         self.lora_B = nn.Linear(r, original_linear_layer.out_features, bias=False)
         nn.init.zeros_(self.lora_B.weight)  # ゼロ初期化
         

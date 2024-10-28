@@ -278,7 +278,7 @@ if __name__ == '__main__':
 
     agent_clip_arch = {"A": "ViT-B/16", "B": "ViT-B/32"}
 
-    for epoch in [10, 9, 8, 7, 6]:
+    for epoch in range(20):
         for agent_name in ['A']:
             agent = OneAgent(agent_name=agent_name, device=device,temperature=temperature, clip_arch=agent_clip_arch[agent_name])
             agent = agent.to(device)
@@ -289,7 +289,6 @@ if __name__ == '__main__':
                 os.makedirs(exp_eval_dir, exist_ok=True)
                 
                 if agent_name == 'A':
-                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m_temperature_{temperature}_vit16.json"
                     # agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
                     agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path=f"models/clipcap_vit16_cc3m/clipcap_{epoch:03d}.pt", strict_clipcap=False)
                     candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m_temperature_{temperature}_vit16_epoch_{epoch}.json"

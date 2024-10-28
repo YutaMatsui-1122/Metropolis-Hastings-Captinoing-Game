@@ -11,10 +11,10 @@ from transformers import GPT2Tokenizer
 # from CLIP_prefix_caption.train import ClipCaptionPrefix
 
 class OneAgent(nn.Module):
-    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, te_alpha_beta=0.5, td_alpha_beta=0.5, te_train_mode="DERPP", td_train_mode="DERPP", clip_arch = "ViT-B/32"):
+    def __init__(self, agent_name='A', device='cuda:0', adapter="mlp", td_update_epochs=10, te_update_epochs=10, temperature = 0.62, te_alpha_beta=0.5, td_alpha_beta=0.5, te_train_mode="DERPP", td_train_mode="DERPP", clip_arch = "ViT-B/32", pretrain = False):
         super().__init__()
         from ProbVLM.src.networks import BayesCap_for_CLIP # import ProbVLM network
-        from CLIP_prefix_caption.train import ClipCaptionPrefix # import CLIP captioning network
+        from CLIP_prefix_caption.train import ClipCaptionPrefix, ClipCaptionModel # import ClipCaption network
         self.agent_name = agent_name
         self.device = device
         self.ProbVLM_Net = BayesCap_for_CLIP(inp_dim=512, out_dim=512, hid_dim=256, num_layers=3, p_drop=0.01,)
@@ -31,8 +31,11 @@ class OneAgent(nn.Module):
         self.prefix_dim = 512
         self.num_layers = 8
         self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-        self.ClipCap = ClipCaptionPrefix(self.prefix_length, self.prefix_length_clip, self.prefix_dim, self.num_layers, self.adapter)
-
+        if pretrain:
+            self.ClipCap = ClipCaptionModel(self.prefix_length, self.prefix_length_clip, self.prefix_dim, self.num_layers, self.adapter)
+        else:
+            self.ClipCap = ClipCaptionPrefix(self.prefix_length, self.prefix_length_clip, self.prefix_dim, self.num_layers, self.adapter)
+        
         self.GGL = GenGaussLoss(reduction='batchsum')
         self.GGLogLikelihood = GenGaussLogLikelihood(reduction='batchsum')
         self.clipcap_loss_list = []
@@ -99,9 +102,12 @@ class OneAgent(nn.Module):
         # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["c_fc"])
         # self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)     
            
-        for param in self.ClipCap.clip_project._modules["model"][0].parameters():
-            param.requires_grad = False # freeze the first layer of the model
+        # for param in self.ClipCap.clip_project._modules["model"][0].parameters():
+        #     param.requires_grad = False # freeze the first layer of the model
+    
+        apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=2, alpha=32, dropout=0.1) # apply LoRA to the first layer of the model
         apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=2, alpha=32, dropout=0.1) # apply LoRA to the second layer of the model
+
         # for param in self.ClipCap.clip_project.named_parameters():
         for param in self.ClipCap.gpt.parameters():
             param.requires_grad = False
@@ -148,10 +154,11 @@ class OneAgent(nn.Module):
             z.append(mu_img)
         self.z = torch.cat(z, dim=0)
     
-    def propose(self):
+    def propose(self, return_caption=False):
         print("Agent", self.agent_name, " propose")
         with torch.no_grad():
             proposed_w = []
+            proposed_caption = []
             max_index = len(self.dataloader_MHNG_fix.dataset)
             batch_size = 500
             indices = torch.arange(max_index)
@@ -159,9 +166,13 @@ class OneAgent(nn.Module):
                 index = indices[i:i + batch_size]
                 z = self.z[index]
                 w = self.text_decoder(z)
+                proposed_caption.extend(w)
                 proposed_w.append(tokenize(w))
             proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
-        return proposed_w
+        if return_caption:
+            return proposed_w, proposed_caption
+        else:
+            return proposed_w
 
     def judge(self, proposed_w, iter = 0):
         print("Agent", self.agent_name, " judge")
@@ -172,6 +183,7 @@ class OneAgent(nn.Module):
             before_self_w = torch.cat(vlm_token, dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
             # before_self_w = torch.cat(self.dataloader_MHNG_fix.dataset.dataset["vlm_token"], dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
             updated_index_list = []
+            mid_r = 0
 
             max_index = len(self.dataloader_MHNG_fix.dataset)
             batch_size = 100
@@ -181,6 +193,14 @@ class OneAgent(nn.Module):
                 index = indices[i:i + batch_size]
                 mu_Sp, alpha_Sp, beta_Sp = self.text_encoder(proposed_w[index])
                 mu_Li, alpha_Li, beta_Li = self.text_encoder(before_self_w[index])
+                # print("alpha_Sp", (1/ alpha_Sp)[0][:5])
+                # # alpha_Sp = alpha_Sp * self.annealing_value
+
+                # # alpha_Li = alpha_Li * self.annealing_value
+                # print(self.annealing_value)
+                # print("alpha_Sp", (1/ alpha_Sp)[0][:5])
+                beta_Sp = beta_Sp * self.annealing_value
+                
                 
                 # calculate p(z|w,\phi)
                 # p_li = -self.GGL(mu_Li, alpha_Li, beta_Li, self.z[index])
@@ -196,7 +216,11 @@ class OneAgent(nn.Module):
                     r = np.ones(len(p_sp))
                 elif self.mode == "no_communication":
                     r = np.zeros(len(p_sp))
-                u = np.random.rand(len(r),)
+                u = np.random.rand(len(r),)            
+
+                # count the number that is 0.01 < r < 0.99
+
+                mid_r += len(np.where((r > 0.01) & (r < 0.99))[0])
 
                 # update w
                 global_update_index = index[np.where(u < r)[0]]
@@ -209,6 +233,7 @@ class OneAgent(nn.Module):
                     j += 1
                 
             print("acceptance rate:", len(updated_index_list)/len(self.dataloader_MHNG_fix.dataset))
+            print("mid_r:", mid_r)
             acceptance_rate = len(updated_index_list)/len(self.dataloader_MHNG_fix.dataset)
             return acceptance_rate
 
@@ -255,7 +280,7 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " update text decoder")
         self.ClipCap.train()
         #update_clipcap_derpp(agent.CLIP_Net, agent.ClipCap, agent.tokenizer, finetune_train_dataloader, f"models/{args.save_dir}", epochs = 10, lr=args.lr, train_mode=args.cl_mode, device=device, buffer=buffer, alpha=der_alpha, beta=derpp_beta)
-        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=1e-5, train_mode=self.td_train_mode, device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.td_alpha_beta, beta=self.td_alpha_beta)
+        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=1e-5, train_mode=self.td_train_mode, device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.td_alpha_beta, beta=self.td_alpha_beta, reserovoir=False)
         self.ClipCap = updated_clipcap.eval()
     
     def update_text_encoder(self, em_epoch):

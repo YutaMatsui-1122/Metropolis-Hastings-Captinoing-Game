@@ -26,10 +26,25 @@ device = torch.device(args.device)
 
 # clip_model, preprocess = clip.load(args.clip_model_type, device=device)
 print("clip_model_type:", args.clip_model_type)
-agent = OneAgent(agent_name='A', device=device, temperature=0.62, clip_arch=args.clip_model_type)
+agent = OneAgent(agent_name='A', device=device, temperature=0.62, clip_arch=args.clip_model_type, pretrain=True)
 # agent.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path=f"models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
 model = agent.ClipCap.to(device)
 clip_model = agent.CLIP_Net.to(device)
+
+for name, param in model.named_parameters():
+    if param.requires_grad:
+        print(name, param.shape)
+
+optimizer = AdamW(model.parameters(), lr=args.lr)
+
+for param in model.parameters():
+    print(param.shape, param.requires_grad)
+
+# print total parameters and trainable parameters
+total_params = sum(p.numel() for p in model.parameters())
+print(f'{total_params:,} total parameters.')
+total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f'{total_trainable_params:,} training parameters.')
 
 if args.dataset == "COCO":
     with open("dataset/dataset_cache/coco_train.pkl", "rb") as f:
@@ -53,7 +68,7 @@ print("prefix_length", train_dataset.prefix_length)
 
 train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=40, shuffle=True, num_workers=args.num_workers)
 
-optimizer = AdamW(model.parameters(), lr=args.lr)
+
 
 scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=5000, num_training_steps=args.epoch * len(train_dataloader))
 
@@ -89,10 +104,12 @@ for epoch in range(args.epoch):
         optimizer.zero_grad()
         progress.set_postfix(loss=loss.item())
         progress.update()
+            
         if idx % 10000 == 0:
             print(logits[0][0][:3])
             print(logits[0][1][:3])
             torch.save(model.state_dict(), f"models/{args.save_dir}/clipcap_latest.pt")
+
     total_loss = train_loss / len(train_dataloader)
     train_loss_list.append(total_loss)
     progress.close()
