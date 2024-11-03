@@ -12,8 +12,7 @@ import ujson as json
 from torch.distributions.gamma import Gamma
 
 from tqdm import tqdm, trange
-import random
-
+import time, sys, re
 
 from transformers import GPT2Tokenizer
 import torch
@@ -24,38 +23,125 @@ from pycocotools.coco import COCO
 # from _dataloader import _get_coco_file_paths
 from ProbVLM.src.ds._dataloader import _get_coco_file_paths
 from CLIP_prefix_caption.parse_conceptual import *
-
+import torch.distributed as dist
 
 
 _tokenizer = ProbVLM_Tokenizer()
 
-def exponential_annealing_beta(epoch, initial_beta=0.01, growth_rate=0.1, epochs=100):
-    return initial_beta + (1 - initial_beta) * (1 - np.exp(-growth_rate * epoch))
+def get_size(obj, seen=None):
+    """再帰的にオブジェクトのメモリ使用量を計算する"""
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+    size = sys.getsizeof(obj)
+    
+    # 再帰的にオブジェクトの属性のサイズを計算
+    if isinstance(obj, dict):
+        size += sum(get_size(v, seen) for v in obj.values())
+        size += sum(get_size(k, seen) for k in obj.keys())
+    elif hasattr(obj, '__dict__'):
+        size += get_size(vars(obj), seen)
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum(get_size(i, seen) for i in obj)
+    
+    return size
 
-def cosine_annealing_beta(epoch, initial_beta=0.001, final_beta=1.0, epochs=100):
-    """Cosine Annealingでbetaを上昇させる"""
-    beta = final_beta + (initial_beta - final_beta) * (1 + np.cos(np.pi * epoch / epochs)) / 2
-    return beta
-def linear_annealing_beta(epoch, initial_beta=0.001, final_beta=1.0, epochs=100):
-    """Linear Annealingでbetaを上昇させる"""
-    beta = initial_beta + (final_beta - initial_beta) * epoch / epochs
-    return beta
-def tanh_annealing(epoch, initial_beta=0.01, final_beta=1.0, epochs=100, scale=10, center=0.5):
+def linear_schedule(start_value: float, end_value: float, total_epochs: int, change_epochs: int) -> torch.Tensor:
     """
-    tanhを使用してbetaをアニーリングし、変化の具合を調整するパラメータを導入する
+    Returns a tensor with values linearly changing from start_value to end_value over the specified change_epochs,
+    and then remains constant for the remaining epochs.
+
     Args:
-        epoch: 現在のエポック数
-        initial_beta: アニーリングの初期値
-        final_beta: アニーリングの最終値
-        epochs: アニーリングの合計エポック数
-        scale: tanh関数のスケール
-        center: 中心の位置を調整するパラメータ
+        start_value (float): The starting value for the schedule.
+        end_value (float): The ending value for the schedule.
+        total_epochs (int): The total number of epochs.
+        change_epochs (int): The number of epochs over which to change the value.
+
     Returns:
-        beta: アニーリングされた値
+        torch.Tensor: A tensor of values where the first part linearly changes from start_value to end_value,
+                      and the rest remains at end_value.
     """
-    # Using the scale parameter to adjust the sharpness of the change
-    beta = (final_beta - initial_beta) * (np.tanh(((epoch / epochs) - center) * scale) + 1) / 2 + initial_beta
-    return beta
+    # 前半の change_epochs での線形変化部分
+    changing_part = torch.linspace(start_value, end_value, steps=change_epochs)
+    # 後半の一定部分
+    constant_part = torch.full((total_epochs - change_epochs,), end_value)
+    # 2つを連結してスケジュールを完成させる
+    return torch.cat((changing_part, constant_part))
+
+def save_proposed(agent, proposed_w):
+    """提案された結果をエージェントのディレクトリに保存"""
+    file_path = os.path.join(agent.save_dir, f'proposed_w_mh_iter.pt')
+    torch.save(proposed_w, file_path)
+
+def save_current_model(model, save_dir, name = "current_model"):
+    """モデルを保存する"""
+    file_path = os.path.join(save_dir, f'{name}.pt')
+    torch.save(model.state_dict(), file_path)
+
+def light_worker(rank):
+    print(f"Worker {rank} is running a light task.")
+    # 簡単な計算を実行してみる
+    result = rank * 2
+    print(f"Worker {rank} completed the light task with result {result}.")
+
+def propose_worker(rank, agentA, agentB, mh_iters):
+    dist.init_process_group(backend='nccl', rank=rank, world_size=2)
+    """各プロセスで提案を実行し、結果をファイルに保存。エージェントごとにデバイスを分ける"""
+    if rank == 0:
+        proposed_w_As = []
+        for mh_iter in range(mh_iters):
+            s = time.time()
+            device = torch.device(agentA.device)
+            agentA.to(device)
+            proposed_w_A = agentA.propose(mh_epoch=mh_iter)
+            proposed_w_As.append(proposed_w_A)
+            print("Agent A propose time:", time.time() - s)
+        
+        proposed_w_As = torch.stack(proposed_w_As, dim=0)            
+        print("proposed_w_As:", proposed_w_As.shape)
+        save_proposed(agentA, proposed_w_As)
+
+    elif rank == 1:
+        proposed_w_Bs = []
+        for mh_iter in range(mh_iters):
+            s = time.time()
+            device = torch.device(agentB.device)
+            agentB.to(device)
+            proposed_w_B = agentB.propose(mh_epoch=mh_iter)
+            proposed_w_Bs.append(proposed_w_B)
+            print("Agent B propose time:", time.time() - s)
+        
+        proposed_w_Bs = torch.stack(proposed_w_Bs, dim=0)
+        print("proposed_w_Bs:", proposed_w_Bs.shape) 
+        save_proposed(agentB, proposed_w_Bs)
+    
+    dist.destroy_process_group()
+
+def update_text_encoder_worker(rank, agentA, agentB, em_iter, file_name = "current_model"):
+    dist.init_process_group(backend='nccl', rank=rank, world_size=2)
+    """各プロセスでテキストエンコーダを更新し、結果をファイルに保存。エージェントごとにデバイスを分ける"""
+    if rank == 0:
+        device = torch.device(agentA.device)
+        agentA.to(device)
+        print("Agent A update text encoder")
+        # print(self.agentA.ProbVLM_Net.txt_BayesCap.mod[0].weight[:5], self.agentB.ProbVLM_Net.txt_BayesCap.mod[0].weight[:5])
+        # print(agentA.ProbVLM_Net.txt_BayesCap.mod[0].weight[0][:5])
+        agentA.update_text_encoder(em_iter)
+        save_current_model(agentA.ProbVLM_Net, agentA.save_dir, name = f"{file_name}_A")  
+        # print(agentA.ProbVLM_Net.txt_BayesCap.mod[0].weight[0][:5])
+    elif rank == 1:
+        device = torch.device(agentB.device)
+        agentB.to(device)
+        print(" Agent B update text encoder")
+        # print(agentB.ProbVLM_Net.txt_BayesCap.mod[0].weight[0][:5])
+        agentB.update_text_encoder(em_iter)
+        save_current_model(agentB.ProbVLM_Net, agentB.save_dir, name = f"{file_name}_B")
+        # print(agentB.ProbVLM_Net.txt_BayesCap.mod[0].weight[0][:5])
+
+    dist.destroy_process_group()
 
 
 class LoRALayer(nn.Module):
@@ -740,6 +826,18 @@ def generate2(
         return generated_list[0]
     else:
         return generated_list
+    
+def clean_generated_texts(output_texts):
+    cleaned_texts = []
+    for text in output_texts:
+        # 改行(\n)の前で一文目を抽出し、ピリオドがなければ追加
+        first_sentence = text.split("\n")[0].strip()
+        if not first_sentence.endswith("."):
+            first_sentence += "."
+        # 正規表現で、ピリオドの前にある複数のスペースを1つにまとめる
+        cleaned_text = re.sub(r'\s+\.', '.', first_sentence)
+        cleaned_texts.append(cleaned_text)
+    return cleaned_texts
 
 def generate_batch(
     model,
@@ -799,6 +897,7 @@ def generate_batch(
         output_list = tokens.cpu().numpy().tolist()
         output_text = [tokenizer.decode(output_list[i]) for i in range(len(output_list))]
         output_text = [output_text[i][:output_text[i].find(stop_token)+1] for i in range(len(output_text))]
+        output_text = clean_generated_texts(output_text)
     return output_text
         
 
@@ -1366,7 +1465,7 @@ if __name__ == "__main__":
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
 
     datasize_coco = 10000
-    datasize_cc3m = 0
+    datasize_cc3m = 40000
     data_mode = "train"
     save_file_name = f"coco_{datasize_coco}_cc3m_{datasize_cc3m}_{data_mode}"
 
@@ -1383,107 +1482,3 @@ if __name__ == "__main__":
     #     pickle.dump(dataset, f)
 
     exit()
-
-    # coco_dataset = CocoDataset(root="dataset/", transform=preprocess, datasize="1000",data_mode='train')
-
-    # DataLoaderの作成
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=8)
-    # coco_dataloader = DataLoader(coco_dataset, batch_size=16, shuffle=False, num_workers=1)
-
-    # データセットに含まれる画像を保存
-    import matplotlib.pyplot as plt
-    # make directory (communication_coco_5000_cc3m_5000)
-    os.makedirs(f"dataset_images/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}", exist_ok=True)
-    for i in tqdm(range(5000, len(dataset))):
-        img = dataset.get_img(i)
-        plt.imshow(img)
-        plt.savefig(f"dataset_images/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}/image_{i}.png")
-
-
-    exit()
-    for batch in coco_dataloader:
-        # img, caption, vlm_token, gpt_token, gpt_mask, index
-        image = batch[0]
-        caption = batch[1]
-        vlm_token = batch[2]
-        gpt_token = batch[3]
-        gpt_mask = batch[4]
-        index = batch[5]
-        print("COCO Dataset content:")
-        print(f"Images: {image.shape}")
-        print(caption[:10])
-        print(f"VLM Tokens: {vlm_token.shape}")
-        print(f"GPT Tokens: {gpt_token.shape}")
-        print(f"GPT Masks: {gpt_mask.shape}")
-        print(f"Index: {index}")
-
-
-
-    print("Dataset length:", len(dataset))
-
-    coco_num = 0
-    cc3m_num = 0
-
-    # バッチを取得して内容を確認する
-    for batch in tqdm(dataloader):
-        # print("Batch content:")
-        image = batch['image']
-        caption = batch['caption']
-        vlm_token = batch['vlm_token']
-        gpt_token = batch['gpt_token']
-        gpt_mask = batch['gpt_mask']
-        datatype = batch['dataset_type']
-        index = batch['index']
-        print("Unified Dataset content:")
-        print(f"Images: {image.shape}")
-        print(caption)
-        print(f"VLM Tokens: {vlm_token.shape}")
-        print(f"GPT Tokens: {gpt_token.shape}")
-        print(f"GPT Masks: {gpt_mask.shape}")
-        print(f"Dataset Type: {datatype}")
-        print(f"Index: {index}")
-        # save image
-        import matplotlib.pyplot as plt
-        for j, img in enumerate(image):
-            img = img.permute(1, 2, 0)
-            plt.imshow(img)
-            plt.savefig(f"image_{j}.png")
-        break
-
-        # print(f"Images: {image.size()}")
-
-        # print(f"Images: {batch['image'].size()}")
-        # print(f"Captions: {batch['caption']}")
-        # print(f"VLM Tokens: {batch['vlm_token']}")
-        # print(f"GPT Tokens: {batch['gpt_token']}")
-        # print(f"GPT Masks: {batch['gpt_mask']}")
-        # print(f"Dataset Type: {batch['dataset_type']}")
-        # print(f"Index: {batch['index']}")
-        # datatype_list.extend(batch['dataset_type'])
-        # batch['dataset_type'] に含まれる各要素が'COCO'か'CC3M'かをカウント
-        coco_num += batch["dataset_type"].count("COCO")
-        cc3m_num += batch["dataset_type"].count("CC3M")
-        # coco_num += (batch['dataset_type'] == 'COCO')
-        # cc3m_num += (batch['dataset_type'] == 'CC3M').sum().item()
-        # break  # 最初のバッチだけ確認するためにループを終了
-        break
-    
-    print(f"COCO: {coco_num}, CC3M: {cc3m_num}")
-
-
-
-    # テストモードの確認
-    dataset_test = UnifiedDataset(data_mode='test', transform=preprocess, datasize_coco="1000", datasize_cc3m="1000")
-
-    dataloader_test = DataLoader(dataset_test, batch_size=4, shuffle=False)
-
-    for batch in dataloader_test:
-        print("\nTest mode batch content:")
-        print(f"Images: {batch['image'].size()}")
-        print(f"Captions: {batch['caption']}")
-        print(f"VLM Tokens: {batch['vlm_token']}")
-        print(f"GPT Tokens: {batch['gpt_token']}")
-        print(f"GPT Masks: {batch['gpt_mask']}")
-        print(f"Dataset Type: {batch['dataset_type']}")
-        print(f"Index: {batch['index']}")
-        break  # 最初のバッチだけ確認するためにループを終了

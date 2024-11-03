@@ -146,12 +146,13 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
     # params1_params = [p for n, p in params1]
     optimizer = AdamW(params, lr=lr)
 
-
     # 更新されるパラメータの詳細を表示
-    for i, param in enumerate(params):
+    for i, (name, param) in enumerate(clipcap.named_parameters()):
         if param.requires_grad:
-            print(f"パラメータ {i}: {param.shape}, 更新される: {param.requires_grad}")
+            print(f"パラメータ {name}: {param.shape}, 更新される: {param.requires_grad}")
 
+    # 更新されるパラメータの数を表示
+    print(f"更新されるパラメータの数: {sum(p.numel() for p in clipcap.parameters() if p.requires_grad)}")
 
     scheduler = get_linear_schedule_with_warmup(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader_shuffle)
@@ -160,9 +161,6 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
     loss_list = []
     loss_der_list = []
     loss_derpp_list = []
-
-    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.63)
-    print("before training", generated_text)
 
     for epoch in range(epochs):
         print(f">>> Training epoch {epoch}")
@@ -178,7 +176,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
             caption = batch["caption"]
             img, gpt_token, gpt_mask = img.to(device), gpt_token.to(device), gpt_mask.to(device)
 
-            batch_size = img.shape[0]
+            batch_size = 16
 
             prefix = agent_z[index].to(device)
             
@@ -244,11 +242,7 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
             progress.update()
 
             loss_list.append(loss.item())
-        generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.63)
-        print("epoch(finetune)", epoch, generated_text)
-            
-        if train_mode != "None":
-            print(np.bincount(buffer.get_task_ids().cpu().numpy()))
+
         if "DERPP" in train_mode:
             print(f"loss, der, derpp: {eph_loss/len(train_loader_shuffle)}, {eph_der_loss/len(train_loader_shuffle)/alpha}, {eph_derpp_loss/len(train_loader_shuffle)/beta}")
         elif "DER" in train_mode:
@@ -266,6 +260,10 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                 clipcap.state_dict(),
                 os.path.join(save_dir, f"{output_prefix}-{epoch:03d}.pt"),
             )
+    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.3)
+    print("epoch(finetune)", epoch, generated_text)
+    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.01)
+    print("epoch(finetune)", epoch, generated_text)
         
     return clipcap
 
@@ -327,9 +325,8 @@ def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epoc
 
     return BayesCap_Net
 
-def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-5, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=0.9, train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5, pretrain_test_loader = None, fine_tune_test_loader = None):
+def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-5, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=0.9, train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5, pretrain_test_loader = None, fine_tune_test_loader = None, reservoir = True):
     BayesCap_Net.txt_BayesCap.eval()
-    torch.set_printoptions(precision=10)
     # check the model before training
     text_emb, z, txt_mu, txt_alpha, txt_beta = buffer.sample(16)
     text_emb, z, txt_mu, txt_alpha, txt_beta = text_emb.to(device), z.to(device), txt_mu.to(device), txt_alpha.to(device), txt_beta.to(device)
@@ -337,13 +334,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
     txt_mu_pred, txt_alpha_pred, txt_beta_pred = BayesCap_Net.txt_BayesCap(text_emb)
 
     loss_der = nnf.mse_loss(txt_mu_pred, txt_mu) + nnf.mse_loss(txt_alpha_pred, txt_alpha) + nnf.mse_loss(txt_beta_pred, txt_beta)
-    print("before training")
-    print("mu", txt_mu[0][:10], txt_mu_pred[0][:10])
-    print("alpha", txt_alpha[0][:10], txt_alpha_pred[0][:10])
-    print("beta", txt_beta[0][:10], txt_beta_pred[0][:10])
-    print("dark knowledge loss", loss_der.item())
-    
-    print("cross_modal_lambda", cross_modal_lambda)
+
     BayesCap_Net = BayesCap_Net.to(device)
     BayesCap_Net.img_BayesCap.eval()
     BayesCap_Net.txt_BayesCap.train()
@@ -384,13 +375,6 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
             # (img_mu, img_alpha, img_beta), (txt_mu, txt_alpha, txt_beta) = BayesCap_Net(xfI, xfT)
             txt_mu, txt_alpha, txt_beta = BayesCap_Net.txt_BayesCap(text_emb)
 
-            if idx == 0:
-                print("text_emb", text_emb[0][:10])
-                print("txt_mu", txt_mu[0][:10])
-                print("txt_alpha", txt_alpha[0][:10])
-                print("txt_beta", txt_beta[0][:10])
-                print("z", z[0][:10])
-
             optimizer.zero_grad()
 
             loss_i = Cri(txt_mu, txt_alpha, txt_beta, z, T1=0, T2=1)
@@ -406,7 +390,7 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
             
             # set task index to epoch
             task_index = torch.tensor([eph+1] * vlm_token.shape[0], device="cpu")
-            if train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP":
+            if (train_mode == "ER_RS" or train_mode == "DER" or train_mode == "DERPP") and reservoir:
                 if idx == 0 and eph == 1:
                     print("use reservoir")
                 # buffer.add(prefix.detach().cpu(), vlm_token.detach().cpu(), gpt_token.detach().cpu(), gpt_mask.detach().cpu(), logits.detach().cpu(), task_index)
@@ -420,12 +404,6 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
 
                 loss_der = alpha * nnf.mse_loss(txt_mu_pred, txt_mu) + nnf.mse_loss(txt_alpha_pred, txt_alpha) + nnf.mse_loss(txt_beta_pred, txt_beta)
                 loss_der.backward(retain_graph=True)
-
-                if idx == 0 and eph == 0:
-                    print("mu", txt_mu[0][:10], txt_mu_pred[0][:10])
-                    print("alpha", txt_alpha[0][:10], txt_alpha_pred[0][:10])
-                    print("beta", txt_beta[0][:10], txt_beta_pred[0][:10])
-                    print("dark knowledge loss", loss_der.item(), "alpha", alpha)
 
                 eph_der_loss += loss_der.item()                
                 loss_der_list.append(loss_der.item()/alpha)

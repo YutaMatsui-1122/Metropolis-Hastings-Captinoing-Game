@@ -52,6 +52,8 @@ class OneAgent(nn.Module):
         self.td_alpha_beta = td_alpha_beta
         self.te_train_mode = te_train_mode
         self.td_train_mode = td_train_mode
+
+        # self.beta_annealing_values = 
     
     def initialize_sign(self):
         print("Agent", self.agent_name, " initialize sign")
@@ -96,30 +98,37 @@ class OneAgent(nn.Module):
         self.ClipCap.load_state_dict(clipcap_weights, strict=strict_clipcap)
         self.ClipCap.to(self.device)
 
-    def lora_setting(self):
+    def lora_setting(self, r=2, alpha=32, dropout=0.1):
+        for param in self.ClipCap.parameters():
+            param.requires_grad = False
         from peft import get_peft_model, LoraConfig, TaskType
-        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["10.mlp.c_fc", "11.mlp.c_fc"])
-        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["c_fc"])
-        # self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)     
+        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["10.mlp.c_fc", "11.mlp.c_fc"]) 
            
         # for param in self.ClipCap.clip_project._modules["model"][0].parameters():
         #     param.requires_grad = False # freeze the first layer of the model
     
-        apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=2, alpha=32, dropout=0.1) # apply LoRA to the first layer of the model
-        apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=2, alpha=32, dropout=0.1) # apply LoRA to the second layer of the model
+        # apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=r, alpha=alpha, dropout=dropout)
+        apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=r, alpha=alpha, dropout=dropout)
 
         # for param in self.ClipCap.clip_project.named_parameters():
-        for param in self.ClipCap.gpt.parameters():
-            param.requires_grad = False
+
+        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["c_attn"])
+        peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["4.attn.c_attn", "5.attn.c_attn", "6.attn.c_attn", ])
+        self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)
 
         self = self.to(self.device)
 
 
-    def communication_field_setup(self, dataloader_MHNG_fix, dataloader_MHNG_shuffle, MH_iter, annealing_beta="None", mode="MHNG"):
+    def communication_field_setup(self, dataloader_MHNG_fix, dataloader_MHNG_shuffle, MH_iter, EM_iter, mode="MHNG"):
         self.dataloader_MHNG_fix = dataloader_MHNG_fix
         self.dataloader_MHNG_shuffle = dataloader_MHNG_shuffle
         self.MH_epochs = MH_iter
-        self.annealing_beta = annealing_beta
+        self.EM_epochs = EM_iter
+        annealing_epochs = min(self.EM_epochs // 2, 10)
+        self.beta_annealing_values = linear_schedule(0.995, 1, self.EM_epochs, annealing_epochs)
+        self.temperature_annealing_values = linear_schedule(0.7, 0.001, self.MH_epochs, self.MH_epochs)
+        print("beta_annealing_values:", self.beta_annealing_values)
+        print("temperature_annealing_values:", self.temperature_annealing_values)
         self.mode = mode
         self.df_proposed_w = pd.DataFrame()
         self.df_sign = pd.DataFrame()
@@ -139,10 +148,12 @@ class OneAgent(nn.Module):
         else:
             return mu_cap, alpha_cap, sigma_cap
         
-    def text_decoder(self, z): # z: latent vector
+    def text_decoder(self, z, temperature = "None"):
+        if temperature == "None":
+            temperature = self.temperature
         with torch.no_grad():
             prefix_embeds = self.ClipCap.clip_project(z.float()).reshape(z.shape[0], self.prefix_length, -1)
-            t = generate_batch(self.ClipCap, self.tokenizer, embed=prefix_embeds, temperature=self.temperature)
+            t = generate_batch(self.ClipCap, self.tokenizer, embed=prefix_embeds, temperature=temperature)
         return t
     
     def perception(self): # tempral version of perception 
@@ -154,8 +165,8 @@ class OneAgent(nn.Module):
             z.append(mu_img)
         self.z = torch.cat(z, dim=0)
     
-    def propose(self, return_caption=False):
-        print("Agent", self.agent_name, " propose")
+    def propose(self, return_caption=False, mh_epoch=-1):
+        print("Agent", self.agent_name, " propose with temperature:", self.temperature_annealing_values[mh_epoch])
         with torch.no_grad():
             proposed_w = []
             proposed_caption = []
@@ -165,17 +176,21 @@ class OneAgent(nn.Module):
             for i in range(0, max_index, batch_size):
                 index = indices[i:i + batch_size]
                 z = self.z[index]
-                w = self.text_decoder(z)
+                w = self.text_decoder(z, temperature=self.temperature_annealing_values[mh_epoch])
                 proposed_caption.extend(w)
                 proposed_w.append(tokenize(w))
+                if i == 0:
+                    print("proposed caption:", w[:5])
             proposed_w = torch.cat(proposed_w, dim=0).to(self.device)
+            
         if return_caption:
             return proposed_w, proposed_caption
         else:
             return proposed_w
 
-    def judge(self, proposed_w, iter = 0):
-        print("Agent", self.agent_name, " judge")
+    def judge(self, proposed_w, em_epoch=-1):
+        annealing_value = self.beta_annealing_values[em_epoch]
+        print("Agent", self.agent_name, " judge with annealing_value:", annealing_value.item())
         with torch.no_grad():
             
             # before_self_w = torch.cat(self.dataloader_MHNG_fix.dataset.vlm_tokens, dim=0).reshape(len(self.dataloader_MHNG_fix.dataset), -1).clone().to(self.device)
@@ -199,7 +214,8 @@ class OneAgent(nn.Module):
                 # # alpha_Li = alpha_Li * self.annealing_value
                 # print(self.annealing_value)
                 # print("alpha_Sp", (1/ alpha_Sp)[0][:5])
-                beta_Sp = beta_Sp * self.annealing_value
+                
+                beta_Sp = beta_Sp * annealing_value
                 
                 
                 # calculate p(z|w,\phi)
@@ -256,7 +272,6 @@ class OneAgent(nn.Module):
                 self.td_buffer.add(z.detach().cpu(), vlm_token.cpu(), gpt_token.cpu(), gpt_mask.cpu(), logits.detach().cpu(), task_index)
                 if self.td_buffer.num_seen_examples > buffer_size:
                     break
-        print("mu_z_mse", mu_z_mse/len(dataloader))
     
     def initialize_te_buffer(self, dataloader, buffer_size):
         self.ProbVLM_Net.txt_BayesCap.eval()
@@ -288,7 +303,7 @@ class OneAgent(nn.Module):
         eval_probvlm_acceptance_prob(self, self.preprocess)
         self.ProbVLM_Net.train()
         # updated_probvlm = update_probvlm(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-6, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5)
-        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=1, alpha=self.te_alpha_beta, beta=self.te_alpha_beta)
+        updated_probvlm = update_probvlm_derpp(self.z, self.CLIP_Net, self.ProbVLM_Net, self.dataloader_MHNG_shuffle, self.save_dir, epochs = self.te_update_epochs, lr=1e-5, device=self.device, output_prefix="probvlm_"+self.agent_name+f"_{em_epoch}", save_every=5, buffer=self.te_buffer, train_mode = self.te_train_mode, cross_modal_lambda=1, alpha=self.te_alpha_beta, beta=self.te_alpha_beta, reservoir=False)
         self.ProbVLM_Net = updated_probvlm.eval()
         eval_probvlm_acceptance_prob(self, self.preprocess)
     

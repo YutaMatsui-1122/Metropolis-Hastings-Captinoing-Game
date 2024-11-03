@@ -1,10 +1,10 @@
 import os
 import torch
 import torch.multiprocessing as mp
-import torch.distributed as dist
 import time
 import socket
 import random
+# import 
 
 class CommunicationField():
     def __init__(self, exp_name, agentA, agentB, EM_iter=10, MH_iter=10, Whole_iter=10):
@@ -49,61 +49,36 @@ class CommunicationField():
         file_path = os.path.join(agent.save_dir, f'proposed_w_mh_iter.pt')
         return torch.load(file_path)
 
-    def propose_worker(self, rank, mh_iters):
-        dist.init_process_group(backend='nccl', rank=rank, world_size=2)
-        """各プロセスで提案を実行し、結果をファイルに保存。エージェントごとにデバイスを分ける"""
-        if rank == 0:
-            proposed_w_As = []
-            for mh_iter in range(mh_iters):
-                s = time.time()
-                device = torch.device(self.agentA.device)
-                self.agentA.to(device)
-                proposed_w_A = self.agentA.propose()
-                proposed_w_As.append(proposed_w_A)
-                print("Agent A propose time:", time.time() - s)
-            
-            proposed_w_As = torch.stack(proposed_w_As, dim=0)            
-            print("proposed_w_As:", proposed_w_As.shape)
-            self.save_proposed(self.agentA, proposed_w_As)
-        elif rank == 1:
-            proposed_w_Bs = []
-            for mh_iter in range(mh_iters):
-                s = time.time()
-                device = torch.device(self.agentB.device)
-                self.agentB.to(device)
-                proposed_w_B = self.agentB.propose()
-                proposed_w_Bs.append(proposed_w_B)
-                print("Agent B propose time:", time.time() - s)
-            
-            proposed_w_Bs = torch.stack(proposed_w_Bs, dim=0)
-            print("proposed_w_Bs:", proposed_w_Bs.shape) 
-            self.save_proposed(self.agentB, proposed_w_Bs)
+    def propose_parallel(self):
+        # プロセスを使って提案を行う
+        agentA_te_buffer, agentA_td_buffer = self.agentA.te_buffer, self.agentA.td_buffer
+        agentB_te_buffer, agentB_td_buffer = self.agentB.te_buffer, self.agentB.td_buffer
+        del self.agentA.te_buffer, self.agentA.td_buffer
+        del self.agentB.te_buffer, self.agentB.td_buffer
+        mp.spawn(propose_worker, args=(self.agentA, self.agentB, self.MH_iter,), nprocs=2, join=True)
+        # バッファを復元
+        self.agentA.te_buffer, self.agentA.td_buffer = agentA_te_buffer, agentA_td_buffer
+        self.agentB.te_buffer, self.agentB.td_buffer = agentB_te_buffer, agentB_td_buffer
+        proposed_w_As = self.load_proposed(self.agentA)
+        proposed_w_Bs = self.load_proposed(self.agentB)
+        return proposed_w_As, proposed_w_Bs
 
-        dist.destroy_process_group()
+    def update_text_encoder_parallel(self, em_iter, file_name = "current_model"):
+        # プロセスを使ってテキストエンコーダを更新
+        # エージェントごとのバッファを取得
+        agentA_td_buffer = self.agentA.td_buffer
+        agentB_td_buffer = self.agentB.td_buffer
+        # エージェントごとのバッファを一度削除する
+        del self.agentA.td_buffer, self.agentB.td_buffer
 
-    def update_text_encoder_worker(self, rank, em_iter):
-        dist.init_process_group(backend='nccl', rank=rank, world_size=2)
-        if rank == 0:
-            device = torch.device(self.agentA.device)
-            self.agentA.to(device)
-            self.agentA.update_text_encoder(em_iter)
-        elif rank == 1:
-            device = torch.device(self.agentB.device)
-            self.agentB.to(device)
-            self.agentB.update_text_encoder(em_iter)
-        dist.destroy_process_group()
-    
-    def update_text_decoder_worker(self, rank, em_iter):
-        dist.init_process_group(backend='nccl', rank=rank, world_size=2)
-        if rank == 0:
-            device = torch.device(self.agentA.device)
-            self.agentA.to(device)
-            self.agentA.update_text_decoder(em_iter)
-        elif rank == 1:
-            device = torch.device(self.agentB.device)
-            self.agentB.to(device)
-            self.agentB.update_text_decoder(em_iter)
-        dist.destroy_process_group()
+        # print(self.agentA.ProbVLM_Net.txt_BayesCap.mod[0].weight[0][:5], self.agentB.ProbVLM_Net.txt_BayesCap.mod[0].weight[0][:5])
+        mp.spawn(update_text_encoder_worker, args=(self.agentA, self.agentB, em_iter, file_name), nprocs=2, join=True)
+        # バッファを復元
+        self.agentA.td_buffer = agentA_td_buffer
+        self.agentB.td_buffer = agentB_td_buffer
+
+        self.agentA.ProbVLM_Net.load_state_dict(torch.load(os.path.join(self.agentA.save_dir, f'{file_name}_A.pt')))
+        self.agentB.ProbVLM_Net.load_state_dict(torch.load(os.path.join(self.agentB.save_dir, f'{file_name}_B.pt')))
 
     def mhcg(self):
         # Metropolis-Hastings Captioning Game   
@@ -117,16 +92,10 @@ class CommunicationField():
             # Each agent updates the sign proposed by the other agent based on the MH communication
             acceptance_rate_A = []
             acceptance_rate_B = []
-            # 並列にプロセスを実行
-            start = time.time()
-            mp.spawn(self.propose_worker, args=(self.MH_iter,), nprocs=2, join=True)
-            print("Propose time:", time.time() - start)
 
-            # 提案された結果をロード
-            proposed_w_As = self.load_proposed(self.agentA)
-            proposed_w_Bs = self.load_proposed(self.agentB)
-            print("proposed_w_A:", proposed_w_As.shape)
-            print("proposed_w_B:", proposed_w_Bs.shape)
+            start = time.time()
+            proposed_w_As, proposed_w_Bs = self.propose_parallel()
+            print("time:", time.time() - start)
 
             # make empty dataframe for proposed sign
             for mh_iter in range(self.MH_iter):
@@ -159,8 +128,9 @@ class CommunicationField():
 
             # Generalized M step
             # Each agent updates the text encoder based on the sign generated by MH communication (今はMH系列の最後のサインだけを使っている)
-            self.agentA.update_text_encoder(em_iter)
-            self.agentB.update_text_encoder(em_iter)
+            # self.agentA.update_text_encoder(em_iter)
+            # self.agentB.update_text_encoder(em_iter)
+            self.update_text_encoder_parallel(em_iter, file_name=f"current_model")
             
             # Each agent updates text decoder based on the sign generated by MH communication (今はMH系列の最後のサインだけを使っている)
             self.agentA.update_text_decoder(em_iter)
@@ -255,6 +225,8 @@ if __name__ == '__main__':
         coco_test_loader_fix_B = torch.utils.data.DataLoader(observationB_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory)
         coco_test_loader_shuffle_B = torch.utils.data.DataLoader(observationB_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=args.pin_memory)
 
+        print("observationA_dataset:", len(observationA_dataset))
+
         communication_field = CommunicationField(exp_name, agentA, agentB, EM_iter=args.EM_iter, MH_iter=args.MH_iter, Whole_iter=args.Whole_iter)
         communication_field.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, coco_test_loader_fix_B, coco_test_loader_shuffle_B, annealing=args.annealing, mode=args.mode)
         save_args_to_json(args, filename="args.json", save_dir=f"exp/{exp_name}")
@@ -264,10 +236,11 @@ if __name__ == '__main__':
         agentA.initialize_te_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
         agentB.initialize_te_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
 
+        te_buffer_size = agentA.td_buffer.logit_buffer.element_size() * agentA.td_buffer.logit_buffer.numel()
+
         # 並列処理のための設定
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = str(find_open_port())
-        print("MASTER_PORT:", os.environ['MASTER_PORT'])
         mp.set_start_method('spawn', force=True)
 
         communication_field.mhcg()

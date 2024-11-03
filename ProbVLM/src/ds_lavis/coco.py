@@ -19,7 +19,7 @@ import torch
 from torch.utils.data import Dataset
 
 from lavis.models import load_model_and_preprocess
-device='cuda:3'
+device='cuda:0'
 model, vis_processors, txt_processors = load_model_and_preprocess(name="blip_feature_extractor", model_type="base", is_eval=True, device=device)
 
 

@@ -268,7 +268,7 @@ if __name__ == '__main__':
     device = torch.device(args.device)
 
     # 0.3. Set the experiment name, directory, and the dataset
-    exp_name = "mhcg_derpp_0.05_1"
+    exp_name = "mhcg_vit_32_16_anneal_1"
     exp_dir = f"exp/{exp_name}"
     exp_eval_dir = f"exp_eval/{exp_name}/{dataset_name}"
     os.makedirs(exp_eval_dir, exist_ok=True)
@@ -278,8 +278,8 @@ if __name__ == '__main__':
 
     agent_clip_arch = {"A": "ViT-B/16", "B": "ViT-B/32"}
 
-    for epoch in range(20):
-        for agent_name in ['A']:
+    for epoch in range(18):
+        for agent_name in ['B']:
             agent = OneAgent(agent_name=agent_name, device=device,temperature=temperature, clip_arch=agent_clip_arch[agent_name])
             agent = agent.to(device)
 
@@ -298,7 +298,7 @@ if __name__ == '__main__':
             else:
                 candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_{agent_name}_epoch_{epoch}_temperature_{temperature}.json"
                 agent.lora_setting()
-                agent.load_pretrain(probvlm_path=f"{exp_dir}/{agent_name}/probvlm_{agent_name}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agent_name}/clipcap_{agent_name}_{epoch}-009.pt")
+                agent.load_pretrain(probvlm_path=f"{exp_dir}/{agent_name}/probvlm_{agent_name}_{epoch}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agent_name}/clipcap_{agent_name}_{epoch}-009.pt")
 
             print(f"EM iter {args.em_iter} , Candidate path {candidate_path}")
 
@@ -316,9 +316,10 @@ if __name__ == '__main__':
                 for caption, filename in zip(captions, filenames):
                     filename = filename.split('.')[0]
                     candidate[filename] = caption
-                print(caption)
+                print(captions[:10])
+                break
             # save the candidate 
-
+            break
             # print length of the candidate
             print(f"Number of captions in the candidate: {len(candidate)}")
             
