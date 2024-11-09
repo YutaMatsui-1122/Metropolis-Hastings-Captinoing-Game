@@ -60,7 +60,7 @@ import pickle, clip, argparse
 from tqdm import tqdm
 
 from one_agent import OneAgent
-from utils import tokenize
+from utils import *
 from transformers import GPT2Tokenizer
 
 class ConceptualCaptionsDataset(Dataset):
@@ -235,12 +235,14 @@ if __name__ == '__main__':
 
     # argparseを使ってコマンドライン引数を取得
     parser = argparse.ArgumentParser(description='PAC-S evaluation')
+    parser.add_argument('--exp_name', type=str, default='default')
     parser.add_argument('--dataset_name', type=str, default='coco', choices=['coco', 'nocaps', 'cc3m'])
+    parser.add_argument('--mode', type=str, default='eval', choices=['eval', 'train'])
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--num_workers', default=1, type=int)
     parser.add_argument('--device', type=str, default='cuda:2')
     parser.add_argument('--em_iter', default=0, type=int)
-    parser.add_argument('--temperature', default=0.62, type=float)
+    parser.add_argument('--temperature', default=0.7, type=float)
     parser.add_argument('--use_official_model', action='store_true', default=False)
 
     args = parser.parse_args()
@@ -250,25 +252,37 @@ if __name__ == '__main__':
     # データ変換（例として、画像サイズを256x256にリサイズ）
     clip_model, transform = clip.load('ViT-B/32', jit=False)
 
-    # データセットとデータローダーの作成
-    if dataset_name == 'nocaps':
-        dataset = NoCapsDataset(annotation_file=nocap_annotation_file, img_dir=nocap_images_dir, transform=transform, return_captions=False)
-        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-    # class ConceptualCaptionsDataset(Dataset):
-    # def __init__(self, gpt2_type: str = "gpt2", data_mode: str = "train", img_dir=None, transform=None, return_captions=True, prefix_length=10, ids=None, datasize="full"):
-    elif dataset_name == 'cc3m':
-        dataset = ConceptualCaptionsDataset(data_mode='test', img_dir=None, transform=transform, return_captions=False, prefix_length=10, ids=None, datasize="full")
-        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-    else:
-        dataset = CocoDataset(annotation_file=coco_annotation_file, img_dir=coco_images_dir, transform=transform)
-        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    if args.mode == 'eval':
+        # データセットとデータローダーの作成
+        if dataset_name == 'nocaps':
+            dataset = NoCapsDataset(annotation_file=nocap_annotation_file, img_dir=nocap_images_dir, transform=transform, return_captions=False)
+            data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        # class ConceptualCaptionsDataset(Dataset):
+        # def __init__(self, gpt2_type: str = "gpt2", data_mode: str = "train", img_dir=None, transform=None, return_captions=True, prefix_length=10, ids=None, datasize="full"):
+        elif dataset_name == 'cc3m':
+            dataset = ConceptualCaptionsDataset(data_mode='test', img_dir=None, transform=transform, return_captions=False, prefix_length=10, ids=None, datasize="full")
+            data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        else:
+            dataset = CocoDataset(annotation_file=coco_annotation_file, img_dir=coco_images_dir, transform=transform)
+            data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        
+    elif args.mode == 'train':
+        if dataset_name == "cc3m":
+            with open("dataset/dataset_cache/cc3m_100000-150000_train.pkl", "rb") as f:
+                dataset = pickle.load(f)
+                dataset.prefix_length = 10
+        elif dataset_name == "coco":
+            with open("dataset/dataset_cache/coco_450000-500000_train.pkl", "rb") as f:
+                dataset = pickle.load(f)
+                dataset.prefix_length = 10
+        data_loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     print(f"Number of images in the dataset: {len(dataset)}")
     # 0.2. Define the device
     device = torch.device(args.device)
 
     # 0.3. Set the experiment name, directory, and the dataset
-    exp_name = "mhcg_vit_32_16_anneal_1"
+    exp_name = args.exp_name
     exp_dir = f"exp/{exp_name}"
     exp_eval_dir = f"exp_eval/{exp_name}/{dataset_name}"
     os.makedirs(exp_eval_dir, exist_ok=True)
@@ -278,8 +292,8 @@ if __name__ == '__main__':
 
     agent_clip_arch = {"A": "ViT-B/16", "B": "ViT-B/32"}
 
-    for epoch in range(18):
-        for agent_name in ['B']:
+    for epoch in [29]:
+        for agent_name in ["A", "B"]:
             agent = OneAgent(agent_name=agent_name, device=device,temperature=temperature, clip_arch=agent_clip_arch[agent_name])
             agent = agent.to(device)
 
@@ -290,13 +304,13 @@ if __name__ == '__main__':
                 
                 if agent_name == 'A':
                     # agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
-                    agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path=f"models/clipcap_vit16_cc3m/clipcap_{epoch:03d}.pt", strict_clipcap=False)
-                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m_temperature_{temperature}_vit16_epoch_{epoch}.json"
+                    agent.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path=f"models/clipcap_vit16_cc3m/clipcap_019.pt", strict_clipcap=False)
+                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_cc3m_temperature_{temperature}_vit16_{args.mode}.json"
                 else:
-                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_coco_temperature_{temperature}.json"
+                    candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_coco_temperature_{temperature}_vit32_{args.mode}.json"
                     agent.load_pretrain(probvlm_path="models/probVLM_coco_prefix-035.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
             else:
-                candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_{agent_name}_epoch_{epoch}_temperature_{temperature}.json"
+                candidate_path = f"{exp_eval_dir}/{dataset_name}_candidate_{agent_name}_epoch_{epoch}_temperature_{temperature}_{args.mode}.json"
                 agent.lora_setting()
                 agent.load_pretrain(probvlm_path=f"{exp_dir}/{agent_name}/probvlm_{agent_name}_{epoch}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agent_name}/clipcap_{agent_name}_{epoch}-009.pt")
 
@@ -304,22 +318,41 @@ if __name__ == '__main__':
 
             candidate = {}
 
-            # 画像を順番に取り出して表示または処理 with tqdm
-            for i, (images, filenames) in enumerate(tqdm(data_loader)):
-                images = images.to(device)
-                mu_img, alpha_img, sigma_img, z = agent.image_encoder(images)
-                if use_official_model:
-                    captions = agent.text_decoder(z) # use CLIP's latent representation as the input of the text decoder
-                else:
-                    captions = agent.text_decoder(mu_img) # use the latent representation of the image as the input of the text decoder
+            if args.mode == 'eval':
+                # 画像を順番に取り出して表示または処理 with tqdm
+                for i, (images, filenames) in enumerate(tqdm(data_loader)):
+                    images = images.to(device)
+                    mu_img, alpha_img, sigma_img, z = agent.image_encoder(images)
+                    if use_official_model:
+                        captions = agent.text_decoder(z) # use CLIP's latent representation as the input of the text decoder
+                    else:
+                        captions = agent.text_decoder(mu_img) # use the latent representation of the image as the input of the text decoder
 
-                for caption, filename in zip(captions, filenames):
-                    filename = filename.split('.')[0]
-                    candidate[filename] = caption
-                print(captions[:10])
-                break
+                    for caption, filename in zip(captions, filenames):
+                        filename = filename.split('.')[0]
+                        candidate[filename] = caption
+                    print(captions[:3])
+                
+            elif args.mode == 'train':
+                for data in tqdm(data_loader):
+                    image = data["image"].to(device)
+                    captions = data["caption"]
+                    index = data["index"]
+                    filenames = [dataset.dataset[i]["image"] for i in index]
+
+                    mu_img, alpha_img, sigma_img, z = agent.image_encoder(image)
+                    if use_official_model:
+                        captions = agent.text_decoder(z)
+                    else:
+                        captions = agent.text_decoder(mu_img)
+
+                    for caption, filename in zip(captions, filenames):
+                        filename = filename.split('/')[-1].split('.')[0]
+                        candidate[filename] = caption
+                    print(captions[:3])
+
+
             # save the candidate 
-            break
             # print length of the candidate
             print(f"Number of captions in the candidate: {len(candidate)}")
             
@@ -327,4 +360,8 @@ if __name__ == '__main__':
                 json.dump(candidate, f, indent=4)
             
             print(f"Saved the candidate to {candidate_path}")
+        
+        if args.use_official_model:
+            break
+
         

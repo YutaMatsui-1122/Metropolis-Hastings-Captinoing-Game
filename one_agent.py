@@ -98,23 +98,35 @@ class OneAgent(nn.Module):
         self.ClipCap.load_state_dict(clipcap_weights, strict=strict_clipcap)
         self.ClipCap.to(self.device)
 
-    def lora_setting(self, r=2, alpha=32, dropout=0.1):
-        for param in self.ClipCap.parameters():
+    def lora_setting(self, r=2, alpha=32, dropout=0.1, clipcap=True, probvlm=True):
+        # freeze the parameters of the network
+        for name, param in self.ProbVLM_Net.named_parameters():
             param.requires_grad = False
+        for name, param in self.ClipCap.named_parameters():
+            param.requires_grad = False
+
         from peft import get_peft_model, LoraConfig, TaskType
-        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["10.mlp.c_fc", "11.mlp.c_fc"]) 
-           
-        # for param in self.ClipCap.clip_project._modules["model"][0].parameters():
-        #     param.requires_grad = False # freeze the first layer of the model
+        if probvlm:
+            apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['mod'], "5", r=r, alpha=alpha, dropout=dropout)
+            apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['block_mu'], "2", r=r, alpha=alpha, dropout=dropout)
+            apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['block_alpha'], "2", r=r, alpha=alpha, dropout=dropout)
+            apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['block_beta'], "2", r=r, alpha=alpha, dropout=dropout)
     
         # apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=r, alpha=alpha, dropout=dropout)
-        apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=r, alpha=alpha, dropout=dropout)
+        if clipcap:
+            apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=r, alpha=alpha, dropout=dropout)
+            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["c_attn",])
+            self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)
 
-        # for param in self.ClipCap.clip_project.named_parameters():
-
-        # peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=2, lora_alpha=32, lora_dropout=0.1, target_modules=["c_attn"])
-        peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["4.attn.c_attn", "5.attn.c_attn", "6.attn.c_attn", ])
-        self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)
+        print("Update parameters")
+        print("ClipCap")
+        for name, param in self.ClipCap.named_parameters():
+            if param.requires_grad:
+                print(name, param.shape)
+        print("ProbVLM")
+        for name, param in self.ProbVLM_Net.named_parameters(): 
+            if param.requires_grad:
+                print(name, param.shape)
 
         self = self.to(self.device)
 
@@ -159,7 +171,7 @@ class OneAgent(nn.Module):
     def perception(self): # tempral version of perception 
         print("Agent", self.agent_name, " perception")
         z = []
-        for batch in self.dataloader_MHNG_fix:
+        for batch in tqdm(self.dataloader_MHNG_fix):
             o = batch["image"].to(self.device)
             mu_img, alpha_img, sigma_img, _ = self.image_encoder(o)
             z.append(mu_img)

@@ -555,6 +555,24 @@ class UnifiedDataset(Dataset):
         
         return [{"image": os.path.join(image_root, img), "caption": caption, "vlm_token": vlm_token, "gpt_token": gpt_token, "dataset": "CC3M"} 
                 for img, caption, vlm_token, gpt_token in zip(images, captions, vlm_tokens, gpt_tokens)]
+
+    def update_with_indices(self, coco_indices=None, cc3m_indices=None):
+        """
+        COCOとCC3Mの各データセットの指定インデックスでself.datasetを更新する関数
+
+        Parameters:
+        coco_indices (list, optional): COCOデータセットのインデックスのリスト。Noneの場合はすべてのCOCOデータを使用。
+        cc3m_indices (list, optional): CC3Mデータセットのインデックスのリスト。Noneの場合はすべてのCC3Mデータを使用。
+        """
+        # COCOデータセットから指定インデックスを抽出
+        if coco_indices is not None:
+            self.coco_dataset = [self.coco_dataset[i] for i in coco_indices if i < len(self.coco_dataset)]
+        # CC3Mデータセットから指定インデックスを抽出
+        if cc3m_indices is not None:
+            self.cc3m_dataset = [self.cc3m_dataset[i] for i in cc3m_indices if i < len(self.cc3m_dataset)]
+        
+        # 抽出したサブセットを統合してself.datasetを更新
+        self.dataset = self.coco_dataset + self.cc3m_dataset
     
     def get_tokens_list(self, captions):
         vlm_tokens_list = []
@@ -1464,21 +1482,75 @@ if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
 
-    datasize_coco = 10000
-    datasize_cc3m = 40000
+    datasize_coco = "10000000"
+    datasize_cc3m = "full"
+    dataset_coco_use = 3000
+    dataset_cc3m_use = 12000
     data_mode = "train"
-    save_file_name = f"coco_{datasize_coco}_cc3m_{datasize_cc3m}_{data_mode}"
+    save_file_name = f"coco_{dataset_coco_use}-cc3m-{dataset_cc3m_use}_{data_mode}"
+
+    # save_file_name = f"coco_{dataset_coco_use}_cc3m_{dataset_cc3m_use}_{data_mode}_last"
 
     # データセットの初期化
     dataset = UnifiedDataset(data_mode=data_mode, transform=preprocess, datasize_coco=f"{datasize_coco}", datasize_cc3m=f"{datasize_cc3m}")
     print("Dataset length:", len(dataset))
 
+    # すべての画像パスを取得
+    # image_paths = [item["image"] for item in dataset.dataset]
+
+    # # 総数とユニークな数を取得
+    # total_count = len(image_paths)
+    # unique_count = len(set(image_paths))
+
+
+
+    # num = 3
+    # # データセットの最初と最後の10件を取得
+    # print("COCO dataset")
+    # print([data["caption"] for data in dataset.coco_dataset[:num]])
+    # print([data["caption"] for data in dataset.coco_dataset[-num:]])
+    # print("CC3M dataset")
+    # print([data["caption"] for data in dataset.cc3m_dataset[:num]])
+    # print([data["caption"] for data in dataset.cc3m_dataset[-num:]])
+
+    # # COCO データセットの最後から coco_use 件
+    coco_indices = list(range(len(dataset.coco_dataset) - dataset_coco_use, len(dataset.coco_dataset)))
+
+    print(coco_indices[0], coco_indices[-1])
+
+    # # CC3M データセットの最後から cc3m_use 件
+    cc3m_indices = list(range(len(dataset.cc3m_dataset) - dataset_cc3m_use, len(dataset.cc3m_dataset)))
+
+    print(cc3m_indices[0], cc3m_indices[-1])
+
+    dataset.update_with_indices(coco_indices, cc3m_indices)
+
+    image_paths = [item["image"] for item in dataset.dataset]
+
+    total_count = len(image_paths)
+    unique_count = len(set(image_paths))
+    print(f"Total number of images: {total_count}")
+    print(f"Unique number of images: {unique_count}")
+
+    # image_paths = [item["image"] for item in dataset.dataset]
+
+    # # 総数とユニークな数を取得
+    # total_count = len(image_paths)
+    # unique_count = len(set(image_paths))
+
+    # print(f"Total number of images: {total_count}")
+    # print(f"Unique number of images: {unique_count}")
+
+    # # データセットの最初と最後の10件を取得
+    # print("COCO dataset")
+    # print([data["caption"] for data in dataset.coco_dataset[:num]])
+    # print([data["caption"] for data in dataset.coco_dataset[-num:]])
+    # print("CC3M dataset")
+    # print([data["caption"] for data in dataset.cc3m_dataset[:num]])
+    # print([data["caption"] for data in dataset.cc3m_dataset[-num:]])
+
+
     with open(f"dataset/dataset_cache/{save_file_name}.pkl", "wb") as f:
         pickle.dump(dataset, f)
-
-    # # save dataset
-    # with open(f"dataset/dataset_cache/communication_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
-    # # with open(f"dataset/dataset_cache/test_coco_{datasize_coco}_cc3m_{datasize_cc3m}.pkl", "wb") as f:
-    #     pickle.dump(dataset, f)
-
-    exit()
+    
+    print("Dataset saved" + f"dataset/dataset_cache/{save_file_name}.pkl")

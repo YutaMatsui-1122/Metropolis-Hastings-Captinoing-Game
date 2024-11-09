@@ -82,8 +82,8 @@ class CommunicationField():
 
     def mhcg(self):
         # Metropolis-Hastings Captioning Game   
-        self.agentA.perception()
-        self.agentB.perception()
+        agentA.perception()
+        agentB.perception()
         self.agentA.save_sign("initial")
         self.agentB.save_sign("initial")
         for em_iter in range(self.EM_iter):
@@ -153,8 +153,8 @@ if __name__ == '__main__':
     parser.add_argument('--agentB_clip_arch', default="ViT-B/32", choices=('ViT-B/32', 'ViT-B/16', ))
     parser.add_argument('--exp_name', default="debug")
     parser.add_argument('--exp_num', default=1, type=int)
-    parser.add_argument('--MH_iter', default=10, type=int)
-    parser.add_argument('--EM_iter', default=10, type=int)
+    parser.add_argument('--MH_iter', default=5, type=int)
+    parser.add_argument('--EM_iter', default=30, type=int)
     parser.add_argument('--Whole_iter', default=10, type=int)
     parser.add_argument('--td_update_epochs', default=10, type=int)
     parser.add_argument('--te_update_epochs', default=10, type=int)
@@ -165,9 +165,9 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--temperature', default=0.62, type=float)
     parser.add_argument('--agentA_te_alpha_beta', default=0.5, type=float)
-    parser.add_argument('--agentA_td_alpha_beta', default=0.5, type=float)
+    parser.add_argument('--agentA_td_alpha_beta', default=0.05, type=float)
     parser.add_argument('--agentB_te_alpha_beta', default=0.5, type=float)
-    parser.add_argument('--agentB_td_alpha_beta', default=0.5, type=float)
+    parser.add_argument('--agentB_td_alpha_beta', default=0.05, type=float)
     parser.add_argument('--pin_memory', default=False)
     parser.add_argument('--annealing', default="None")
     parser.add_argument('--mode', default="MHNG")
@@ -201,7 +201,7 @@ if __name__ == '__main__':
             observation_file = "communication_coco_50_cc3m_50"
             args.buffer_size = 50
         else:
-            observation_file = f"communication_coco_5000_cc3m_5000"
+            observation_file = f"coco_3000-cc3m-12000_train"
         
         with open(f"dataset/dataset_cache/{observation_file}.pkl", "rb") as f:
             observationA_dataset = pickle.load(f)
@@ -230,6 +230,8 @@ if __name__ == '__main__':
         communication_field = CommunicationField(exp_name, agentA, agentB, EM_iter=args.EM_iter, MH_iter=args.MH_iter, Whole_iter=args.Whole_iter)
         communication_field.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, coco_test_loader_fix_B, coco_test_loader_shuffle_B, annealing=args.annealing, mode=args.mode)
         save_args_to_json(args, filename="args.json", save_dir=f"exp/{exp_name}")
+
+
 
         agentA.initialize_td_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
         agentB.initialize_td_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
