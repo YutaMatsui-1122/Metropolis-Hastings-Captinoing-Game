@@ -292,7 +292,7 @@ if __name__ == '__main__':
 
     agent_clip_arch = {"A": "ViT-B/16", "B": "ViT-B/32"}
 
-    for epoch in [29]:
+    for epoch in [29, 20, 10, 5, 0]:
         for agent_name in ["A", "B"]:
             agent = OneAgent(agent_name=agent_name, device=device,temperature=temperature, clip_arch=agent_clip_arch[agent_name])
             agent = agent.to(device)

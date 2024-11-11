@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # List of datasets and epochs
-datasets=("cc3m" ) # "coco" or "cc3m" or "nocaps"
-dataset_mode=("eval") # "train" or "eval"
-epochs=(0 10 20 29)
+datasets=("cc3m" "coco") # "coco" or "cc3m" or "nocaps"
+dataset_mode=("eval" "train") # "train" or "eval"
+epochs=(29 20 10 5 0)
 names=("A" "B")
-exp_name="mhcg_vit_32_16_mh_anneal_gpt_update_all_layer_1"
+exp_name="mhcg_vit_32_16_probvlm_lora_traindata_1"
 temperature=0.7
 device="cuda:0"
 

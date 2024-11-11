@@ -1,0 +1,55 @@
+カテゴリID: 1, 名前: person
+カテゴリID: 2, 名前: bicycle
+カテゴリID: 3, 名前: car
+カテゴリID: 4, 名前: motorcycle
+カテゴリID: 6, 名前: bus
+カテゴリID: 8, 名前: truck
+カテゴリID: 9, 名前: boat
+カテゴリID: 10, 名前: traffic light
+カテゴリID: 13, 名前: stop sign
+カテゴリID: 15, 名前: bench
+カテゴリID: 16, 名前: bird
+カテゴリID: 17, 名前: cat
+カテゴリID: 18, 名前: dog
+カテゴリID: 19, 名前: horse
+カテゴリID: 23, 名前: bear
+カテゴリID: 25, 名前: giraffe
+カテゴリID: 27, 名前: backpack
+カテゴリID: 28, 名前: umbrella
+カテゴリID: 31, 名前: handbag
+カテゴリID: 32, 名前: tie
+カテゴリID: 33, 名前: suitcase
+カテゴリID: 34, 名前: frisbee
+カテゴリID: 37, 名前: sports ball
+カテゴリID: 39, 名前: baseball bat
+カテゴリID: 40, 名前: baseball glove
+カテゴリID: 42, 名前: surfboard
+カテゴリID: 44, 名前: bottle
+カテゴリID: 47, 名前: cup
+カテゴリID: 48, 名前: fork
+カテゴリID: 49, 名前: knife
+カテゴリID: 50, 名前: spoon
+カテゴリID: 51, 名前: bowl
+カテゴリID: 52, 名前: banana
+カテゴリID: 56, 名前: broccoli
+カテゴリID: 57, 名前: carrot
+カテゴリID: 58, 名前: hot dog
+カテゴリID: 61, 名前: cake
+カテゴリID: 62, 名前: chair
+カテゴリID: 63, 名前: couch
+カテゴリID: 64, 名前: potted plant
+カテゴリID: 65, 名前: bed
+カテゴリID: 67, 名前: dining table
+カテゴリID: 72, 名前: tv
+カテゴリID: 73, 名前: laptop
+カテゴリID: 76, 名前: keyboard
+カテゴリID: 77, 名前: cell phone
+カテゴリID: 78, 名前: microwave
+カテゴリID: 79, 名前: oven
+カテゴリID: 81, 名前: sink
+カテゴリID: 82, 名前: refrigerator
+カテゴリID: 84, 名前: book
+カテゴリID: 85, 名前: clock
+カテゴリID: 86, 名前: vase
+カテゴリID: 87, 名前: scissors
+カテゴリID: 88, 名前: teddy bear
