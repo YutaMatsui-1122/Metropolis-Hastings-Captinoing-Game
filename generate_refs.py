@@ -147,7 +147,8 @@ class NoCapsDataset(Dataset):
         return image, captions, img_filename
     
 
-train_file = "coco_450000-500000_train"
+train_file = "coco_2017_val_split_dataset_b"
+save_file = "coco_b_val_refs"
 
 with open(f"dataset/dataset_cache/{train_file}.pkl", "rb") as f:
     train_dataset = pickle.load(f)
@@ -156,14 +157,22 @@ with open(f"dataset/dataset_cache/{train_file}.pkl", "rb") as f:
 import matplotlib.pyplot as plt
 
 references = {}
-for i in range(len(train_dataset)//5):
-    image_path = train_dataset.dataset[i]["image"]
-    # caption = [train_dataset.dataset[i]["caption"]]
-    caption = [train_dataset.dataset[j]["caption"] for j in [i*5, i*5+1, i*5+2, i*5+3, i*5+4]]
-    img_name = os.path.splitext(image_path)[0]
+print(len(train_dataset))
+for i in range(len(train_dataset)):
+    image_path = train_dataset.images[i]
+    caption = [train_dataset.captions[i]]
+    img_name = os.path.splitext(image_path)[0].split("/")[-1]
+    # if i <10:
+    #     print(img_name, caption, image_path)
+    #     img_name_ = img_name.split("/")[-1]
+    #     print(img_name_)
     # image_path = train_dataset.dataset[i]["image"]
     # caption = train_dataset.dataset[i]["caption"]
-    references[img_name] = caption
+    if img_name in references:
+        references[img_name].extend(caption)
+    else:
+        references[img_name] = caption
+    # references[img_name] = caption
 
 keys = list(references.keys())[:2]
 print(keys)
@@ -175,7 +184,7 @@ print("Number of captions per image:")
 print("Min:", min(num_captions))
 print("Max:", max(num_captions))
 
-with open("cc3m_train_refs.json", "w") as f:
+with open(f"exp_eval/refs/{save_file}.json", "w") as f:
     json.dump(references, f, indent=4)
 
 # dataset_name = "cc3m" # "nocaps" or "cc3m"

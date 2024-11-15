@@ -272,7 +272,7 @@ if __name__ == '__main__':
                 dataset = pickle.load(f)
                 dataset.prefix_length = 10
         elif dataset_name == "coco":
-            with open("dataset/dataset_cache/coco_450000-500000_train.pkl", "rb") as f:
+            with open("dataset/dataset_cache/coco_350000-400000_train.pkl", "rb") as f:
                 dataset = pickle.load(f)
                 dataset.prefix_length = 10
         data_loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
@@ -292,7 +292,7 @@ if __name__ == '__main__':
 
     agent_clip_arch = {"A": "ViT-B/16", "B": "ViT-B/32"}
 
-    for epoch in [29, 20, 10, 5, 0]:
+    for epoch in [29, 10]:
         for agent_name in ["A", "B"]:
             agent = OneAgent(agent_name=agent_name, device=device,temperature=temperature, clip_arch=agent_clip_arch[agent_name])
             agent = agent.to(device)
@@ -331,10 +331,11 @@ if __name__ == '__main__':
                     for caption, filename in zip(captions, filenames):
                         filename = filename.split('.')[0]
                         candidate[filename] = caption
-                    print(captions[:3])
+                    if i % 100 == 0:
+                        print(captions[:3])
                 
             elif args.mode == 'train':
-                for data in tqdm(data_loader):
+                for j, data in enumerate(tqdm(data_loader)):
                     image = data["image"].to(device)
                     captions = data["caption"]
                     index = data["index"]
@@ -349,7 +350,8 @@ if __name__ == '__main__':
                     for caption, filename in zip(captions, filenames):
                         filename = filename.split('/')[-1].split('.')[0]
                         candidate[filename] = caption
-                    print(captions[:3])
+                    if j % 100 == 0:
+                        print(captions[:3])
 
 
             # save the candidate 

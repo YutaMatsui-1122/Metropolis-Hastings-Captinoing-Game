@@ -35,9 +35,7 @@ class CommunicationField():
 
     def initialize_agent(self):
         self.agentA.initialize_sign()
-        self.agentA.lora_setting()
         self.agentB.initialize_sign()
-        self.agentB.lora_setting()
 
     def save_proposed(self, agent, proposed_w):
         """提案された結果をエージェントのディレクトリに保存"""
@@ -168,6 +166,9 @@ if __name__ == '__main__':
     parser.add_argument('--agentA_td_alpha_beta', default=0.05, type=float)
     parser.add_argument('--agentB_te_alpha_beta', default=0.5, type=float)
     parser.add_argument('--agentB_td_alpha_beta', default=0.05, type=float)
+    parser.add_argument('--lora_r', default=2, type=int)
+    parser.add_argument('--lora_alpha', default=32, type=float)
+    parser.add_argument('--lora_dropout', default=0.1, type=float)
     parser.add_argument('--pin_memory', default=False)
     parser.add_argument('--annealing', default="None")
     parser.add_argument('--mode', default="MHNG")
@@ -196,6 +197,9 @@ if __name__ == '__main__':
         agentA.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20_arch_ViT-B-16-epoch-45.pth", clipcap_path="models/clipcap_vit16_cc3m/clipcap_019.pt", strict_clipcap=False)
         # agentA.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20-epoch-69.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
         agentB.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
+        
+        agentA.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora__dropout)
+        agentB.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora__dropout)
 
         if "debug" in exp_name:
             observation_file = "communication_coco_50_cc3m_50"
@@ -228,7 +232,7 @@ if __name__ == '__main__':
         print("observationA_dataset:", len(observationA_dataset))
 
         communication_field = CommunicationField(exp_name, agentA, agentB, EM_iter=args.EM_iter, MH_iter=args.MH_iter, Whole_iter=args.Whole_iter)
-        communication_field.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, coco_test_loader_fix_B, coco_test_loader_shuffle_B, annealing=args.annealing, mode=args.mode)
+        communication_field.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, coco_test_loader_fix_B, coco_test_loader_shuffle_B, mode=args.mode)
         save_args_to_json(args, filename="args.json", save_dir=f"exp/{exp_name}")
 
 

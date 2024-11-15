@@ -609,7 +609,6 @@ class UnifiedDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
 
-        # 常にキャプションを含む形式で返す
         return {
             "image": img,
             "caption": item["caption"],
@@ -623,7 +622,108 @@ class UnifiedDataset(Dataset):
     def __len__(self) -> int:
         return len(self.dataset)
 
+class DevidedCocoDataset(Dataset):
+    def __init__(self, dataset_file, captions_file, image_dir, transform=None):
+        """
+        Args:
+            dataset_file (str): データセットA/BのJSONファイルパス。
+            captions_file (str): COCOデータセットのキャプションアノテーションファイルパス。
+            image_dir (str): 画像が保存されているディレクトリパス。
+            transform (callable, optional): 画像に適用する変換。
+        """
+        self.image_dir = image_dir
+        self.transform = transform
 
+        self.gpt_tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        self.vlm_tokenizer = tokenize
+        self.prefix_length = 10
+
+        # データセットファイルの読み込み
+        with open(dataset_file, 'r') as f:
+            self.dataset_info = json.load(f)
+        
+        # COCOキャプションデータの読み込み
+        self.coco = COCO(captions_file)
+        
+        # カテゴリ情報と画像IDとカテゴリのマッピング
+        self.categories_name = self.dataset_info["categories"]
+        self.image_categories = self.dataset_info["image_ids"]
+        
+        # 画像IDとキャプションのペアを生成
+        # self.image_caption_pairs = []
+        self.images = []
+        self.captions = []
+        self.categories = []
+        for image_id in self.image_categories.keys():
+            ann_ids = self.coco.getAnnIds(imgIds=int(image_id))
+            captions_info = self.coco.loadAnns(ann_ids)
+            image_path = os.path.join(self.image_dir, self.coco.loadImgs(int(image_id))[0]['file_name'])
+            for caption_info in captions_info:
+                self.images.append(image_path)
+                self.captions.append(caption_info['caption'])
+                self.categories.append(self.get_image_categories(image_id))
+    
+        print(f"Number of images: {len(self.images)}")
+        print(f"Examples image path: {self.images[:3]}")
+        print(f"Examples caption: {self.captions[:3]}")
+            
+        # トークン化
+        self.vlm_tokens, self.gpt_tokens = self.get_tokens_list(self.captions)
+
+        all_tokens = self.gpt_tokens
+        all_len = torch.tensor([len(tokens) for tokens in all_tokens]).float()
+        self.max_seq_len = min(int(all_len.mean() + all_len.std() * 10), int(all_len.max()))
+
+    def pad_tokens(self, tokens):
+        padding = self.max_seq_len - tokens.shape[0]
+        if padding > 0:
+            tokens = torch.cat((tokens, torch.zeros(padding, dtype=torch.int64) - 1))
+        elif padding < 0:
+            tokens = tokens[:self.max_seq_len]
+        mask = tokens.ge(0)
+        tokens[~mask] = 0
+        mask = mask.float()
+        mask = torch.cat((torch.ones(self.prefix_length), mask), dim=0)
+        return tokens, mask
+    
+    def get_tokens_list(self, captions):
+        vlm_tokens_list = []
+        gpt_tokens_list = []
+        for caption in tqdm(captions):
+            vlm_tokens = self.vlm_tokenizer(caption)
+            gpt_tokens = torch.tensor(self.gpt_tokenizer.encode(caption))
+            vlm_tokens_list.append(vlm_tokens[0])
+            gpt_tokens_list.append(gpt_tokens)
+        return vlm_tokens_list, gpt_tokens_list
+
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        image_path, caption, vlm_token, gpt_token = self.images[idx], self.captions[idx], self.vlm_tokens[idx], self.gpt_tokens[idx]
+        gpt_token, gpt_mask = self.pad_tokens(gpt_token)
+        # 画像を開いて、必要に応じて変換
+        image = Image.open(image_path).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        return {
+            "image": image,
+            "caption": caption,
+            "vlm_token": vlm_token,
+            "gpt_token": gpt_token,
+            "gpt_mask": gpt_mask,
+            "index": idx
+        }
+
+    def get_image_categories(self, image_id):
+        """
+        指定した画像IDに関連するカテゴリの名前を取得
+        """
+        if image_id in self.image_categories:
+            category_ids = self.image_categories[image_id]
+            return [self.categories_name[str(cat_id)] for cat_id in category_ids]
+        else:
+            return []
 
 def set_caption_to_dataset(dataset, captions=None, caption_file=None):
     """
@@ -1481,13 +1581,30 @@ def save_args_to_json(args, filename="config.json", save_dir="save_models"):
 if __name__ == "__main__":
     device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     clip_model, preprocess = clip.load("ViT-B/32", device=device)
+    mode = "val" # データセットのモード (train or val)
+    file_prefix = f"coco_2017_{mode}" # ファイルのプレフィックス
 
-    datasize_coco = "10000000"
+    # Divide the COCO dataset into two parts
+    dataset_files = [f"dataset_split_info/coco_2017_{mode}_split_dataset_a_info.json", f"dataset_split_info/coco_2017_{mode}_split_dataset_b_info.json", f"dataset_split_info/coco_2017_{mode}_split_whole_category_images_info.json"] 
+    for dataset_name, dataset_file in zip(["a", "b", "whole"], dataset_files):
+        captions_file = f"dataset/coco/annotations/captions_{mode}2017.json"  # COCOキャプションファイル
+        image_dir = f"dataset/coco/{mode}2017"  # 画像ディレクトリ
+
+        dataset = DevidedCocoDataset(dataset_file=dataset_file, captions_file=captions_file, image_dir=image_dir, transform=preprocess)
+
+        # save the dataset
+        # with open(f"dataset/dataset_cache/coco_split_dataset_{dataset_name}.pkl", "wb") as f:
+        with open(f"dataset/dataset_cache/{file_prefix}_split_dataset_{dataset_name}.pkl", "wb") as f:
+            pickle.dump(dataset, f)
+
+    exit()
+
+    datasize_coco = "82783"
     datasize_cc3m = "full"
-    dataset_coco_use = 3000
-    dataset_cc3m_use = 12000
+    dataset_coco_use = 5000
+    dataset_cc3m_use = 0
     data_mode = "train"
-    save_file_name = f"coco_{dataset_coco_use}-cc3m-{dataset_cc3m_use}_{data_mode}"
+    save_file_name = "coco_350000-400000_train"
 
     # save_file_name = f"coco_{dataset_coco_use}_cc3m_{dataset_cc3m_use}_{data_mode}_last"
 
@@ -1518,14 +1635,15 @@ if __name__ == "__main__":
 
     print(coco_indices[0], coco_indices[-1])
 
-    # # CC3M データセットの最後から cc3m_use 件
-    cc3m_indices = list(range(len(dataset.cc3m_dataset) - dataset_cc3m_use, len(dataset.cc3m_dataset)))
+    # # # CC3M データセットの最後から cc3m_use 件
+    # cc3m_indices = list(range(len(dataset.cc3m_dataset) - dataset_cc3m_use, len(dataset.cc3m_dataset)))
 
-    print(cc3m_indices[0], cc3m_indices[-1])
+    # print(cc3m_indices[0], cc3m_indices[-1])
 
-    dataset.update_with_indices(coco_indices, cc3m_indices)
+    dataset.update_with_indices(coco_indices)
 
     image_paths = [item["image"] for item in dataset.dataset]
+    print(image_paths[:10], image_paths[-10:])
 
     total_count = len(image_paths)
     unique_count = len(set(image_paths))

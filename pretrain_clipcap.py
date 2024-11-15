@@ -6,8 +6,8 @@ from update_models import *
 from transformers import AdamW, get_linear_schedule_with_warmup
 
 argparser = argparse.ArgumentParser()
-argparser.add_argument('--clip_model_type', default="ViT-B/32", choices=('RN50', 'RN101', 'RN50x4', 'ViT-B/32', 'ViT-B/16', ))
-argparser.add_argument('--dataset', default="COCO", choices=("COCO", "CC3M"))
+argparser.add_argument('--clip_model_type', default="ViT-B/32", choices=('ViT-B/32', 'ViT-B/16', ))
+argparser.add_argument('--dataset', default="COCO", choices=("COCO", "CC3M", "COCO_A", "COCO_B"))   
 argparser.add_argument('--epoch', default=20, type=int)
 argparser.add_argument('--lr', default=2e-5, type=float)
 argparser.add_argument('--num_workers', type=int, default=1)
@@ -55,6 +55,18 @@ elif args.dataset == "CC3M":
     with open("dataset/dataset_cache/cc3m_train.pkl", "rb") as f:
         train_dataset = pickle.load(f)
         train_dataset.prefix_length = agent.prefix_length
+
+elif args.dataset == "COCO_A":
+    with open("dataset/dataset_cache/coco_2017_train_split_dataset_a.pkl", "rb") as f:
+        train_dataset = pickle.load(f)
+        train_dataset.prefix_length = agent.prefix_length
+
+elif args.dataset == "COCO_B":
+    # with open("dataset/dataset_cache/coco_split_dataset_b.pkl", "rb") as f:
+    with open("dataset/dataset_cache/coco_2017_train_split_dataset_b.pkl", "rb") as f:
+        train_dataset = pickle.load(f)
+        train_dataset.prefix_length = agent.prefix_length
+
 else:
     raise ValueError("Invalid dataset")
 
@@ -67,8 +79,6 @@ print("train_dataset:", len(train_dataset))
 print("prefix_length", train_dataset.prefix_length)
 
 train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=40, shuffle=True, num_workers=args.num_workers)
-
-
 
 scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=5000, num_training_steps=args.epoch * len(train_dataloader))
 
@@ -105,7 +115,7 @@ for epoch in range(args.epoch):
         progress.set_postfix(loss=loss.item())
         progress.update()
             
-        if idx % 10000 == 0:
+        if (idx+1) % 10000 == 0:
             print(logits[0][0][:3])
             print(logits[0][1][:3])
             torch.save(model.state_dict(), f"models/{args.save_dir}/clipcap_latest.pt")
@@ -122,6 +132,9 @@ for epoch in range(args.epoch):
     if epoch % args.save_interval == 0 or epoch == args.epoch - 1:
         torch.save(model.state_dict(), f"models/{args.save_dir}/clipcap_{epoch:03d}.pt")
         torch.save(train_loss_list, f"models/{args.save_dir}/train_loss_list.pt")
+
+
+    
 
     # print(f">>> Evaluating epoch {epoch} <<<")
     # model.eval()

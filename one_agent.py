@@ -112,21 +112,22 @@ class OneAgent(nn.Module):
             apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['block_alpha'], "2", r=r, alpha=alpha, dropout=dropout)
             apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['block_beta'], "2", r=r, alpha=alpha, dropout=dropout)
     
-        # apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=r, alpha=alpha, dropout=dropout)
+        
         if clipcap:
+            apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=r, alpha=alpha, dropout=dropout)
             apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=r, alpha=alpha, dropout=dropout)
             peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["c_attn",])
             self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)
 
-        print("Update parameters")
-        print("ClipCap")
-        for name, param in self.ClipCap.named_parameters():
-            if param.requires_grad:
-                print(name, param.shape)
-        print("ProbVLM")
-        for name, param in self.ProbVLM_Net.named_parameters(): 
-            if param.requires_grad:
-                print(name, param.shape)
+        # print("Update parameters")
+        # print("ClipCap")
+        # for name, param in self.ClipCap.named_parameters():
+        #     if param.requires_grad:
+        #         print(name, param.shape)
+        # print("ProbVLM")
+        # for name, param in self.ProbVLM_Net.named_parameters(): 
+        #     if param.requires_grad:
+        #         print(name, param.shape)
 
         self = self.to(self.device)
 

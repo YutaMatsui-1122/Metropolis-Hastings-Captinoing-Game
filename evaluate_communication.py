@@ -14,19 +14,17 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import tqdm
-from bert_score import score as bert_score
-from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, LoraConfig, TaskType
-import copy
 
 # 0.2. Define the device
-device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 
 # 0.3. Set the experiment name, directory, and the dataset
-exp_name = "mhcg_derpp_0.05_1"
+exp_name = "mhcg_vit_32_16_probvlm_lora_traindata_1"
 exp_dir = f"exp/{exp_name}"
-observation_file = "communication_coco_5000_cc3m_5000"
+observation_file = "coco_3000-cc3m-12000_train"
 eval_sign = True
 eval_captioning = False
+mh_iter = 5
 
 # 1. Evaluate the likelihood of the latent representation given the shared sign
 # 1.1. Load the trained agents
@@ -39,13 +37,13 @@ nll_B_sign_B_list_for_plot = []
 nll_sign_A_list_for_plot = []
 nll_sign_B_list_for_plot = []
 
-for em_iter in [-1, 20, 15, 10]:
+for em_iter in range(-1, 30):
     print("EM Iteration:", em_iter)
     # Load the trained agents
-    agentA = OneAgent(agent_name='A', device=device)
-    agentB = OneAgent(agent_name='B', device=device)
-    agentA_pretrain = OneAgent(agent_name='A', device=device)
-    agentB_pretrain = OneAgent(agent_name='B', device=device)
+    agentA = OneAgent(agent_name='A', device=device, clip_arch="ViT-B/16")
+    agentB = OneAgent(agent_name='B', device=device, clip_arch="ViT-B/32")
+    agentA_pretrain = OneAgent(agent_name='A', device=device, clip_arch="ViT-B/16")
+    agentB_pretrain = OneAgent(agent_name='B', device=device, clip_arch="ViT-B/32")
     agentA = agentA.to(device)
     agentB = agentB.to(device)
     agentA_pretrain = agentA_pretrain.to(device)
@@ -55,10 +53,10 @@ for em_iter in [-1, 20, 15, 10]:
     print("Load the trained agents' parameters")
     if em_iter != -1:
         agentA.lora_setting()
-        agentA.load_pretrain(probvlm_path=f"{exp_dir}/{agentA.agent_name}/probvlm_A-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentA.agent_name}/clipcap_A_{em_iter}-009.pt")
+        agentA.load_pretrain(probvlm_path=f"{exp_dir}/{agentA.agent_name}/probvlm_A_{em_iter}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentA.agent_name}/clipcap_A_{em_iter}-009.pt")
         agentB.lora_setting()
-        agentB.load_pretrain(probvlm_path=f"{exp_dir}/{agentB.agent_name}/probvlm_B-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentB.agent_name}/clipcap_B_{em_iter}-009.pt")
-    agentA_pretrain.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.3_20-epoch-15.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
+        agentB.load_pretrain(probvlm_path=f"{exp_dir}/{agentB.agent_name}/probvlm_B_{em_iter}-epoch-9.pth", clipcap_path=f"{exp_dir}/{agentB.agent_name}/clipcap_B_{em_iter}-009.pt")
+    agentA_pretrain.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20_arch_ViT-B-16-epoch-45.pth", clipcap_path="models/clipcap_vit16_cc3m/clipcap_019.pt", strict_clipcap=False)
     agentB_pretrain.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
     print("Load the trained agents' parameters done")
     # 1.2. Load the shared sign and set the observation dataset
@@ -68,8 +66,8 @@ for em_iter in [-1, 20, 15, 10]:
             shared_sign_A = pd.read_csv(f"{exp_dir}/{agentA.agent_name}/agent_A_sign.csv")[f"initial"]
             shared_sign_B = pd.read_csv(f"{exp_dir}/{agentB.agent_name}/agent_B_sign.csv")[f"initial"]
         else:
-            shared_sign_A = pd.read_csv(f"{exp_dir}/{agentA.agent_name}/agent_A_sign.csv")[f"EM_{em_iter}_MH_9"]
-            shared_sign_B = pd.read_csv(f"{exp_dir}/{agentB.agent_name}/agent_B_sign.csv")[f"EM_{em_iter}_MH_9"]
+            shared_sign_A = pd.read_csv(f"{exp_dir}/{agentA.agent_name}/agent_A_sign.csv")[f"EM_{em_iter}_MH_{mh_iter-1}"]
+            shared_sign_B = pd.read_csv(f"{exp_dir}/{agentB.agent_name}/agent_B_sign.csv")[f"EM_{em_iter}_MH_{mh_iter-1}"]
 
         with open(f"dataset/dataset_cache/{observation_file}.pkl", "rb") as f:
             observation_dataset = pickle.load(f)
