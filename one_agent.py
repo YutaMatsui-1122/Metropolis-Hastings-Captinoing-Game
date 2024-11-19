@@ -102,8 +102,14 @@ class OneAgent(nn.Module):
         # freeze the parameters of the network
         for name, param in self.ProbVLM_Net.named_parameters():
             param.requires_grad = False
-        for name, param in self.ClipCap.named_parameters():
-            param.requires_grad = False
+        if clipcap:
+            for name, param in self.ClipCap.named_parameters():
+                param.requires_grad = False
+        elif clipcap == False:
+            for name, param in self.ClipCap.gpt.named_parameters():
+                param.requires_grad = False
+
+
 
         from peft import get_peft_model, LoraConfig, TaskType
         if probvlm:
@@ -114,10 +120,21 @@ class OneAgent(nn.Module):
     
         
         if clipcap:
+            # print the parameters of the network
+            # print("ClipCap")
+            for name, param in self.ClipCap.named_parameters():
+                print("name:", name, "param.requires_grad:", param.requires_grad, "param.shape:", param.shape)
             apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=r, alpha=alpha, dropout=dropout)
             apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=r, alpha=alpha, dropout=dropout)
-            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["c_attn",])
+            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["c_attn","c_proj"])
             self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)
+
+            # print the parameters that are trainable
+            # print("ClipCap")
+            for name, param in self.ClipCap.named_parameters():
+                if param.requires_grad:
+                    print(name, param.shape)
+            
 
         # print("Update parameters")
         # print("ClipCap")

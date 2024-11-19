@@ -127,7 +127,7 @@ def update_clipcap(CLIP_Net, train_loader, test_loader, model, save_dir, epochs,
 
     return model, loss_list, test_loss_list
 
-def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5, reserovoir = True):
+def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5, reserovoir = True, use_scheduler = False):
     print("start training clipcap with alpha:", alpha, "beta:", beta, "train_mode:", train_mode)
     clipcap = clipcap.to(device)
     clipcap.train()
@@ -154,9 +154,10 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
     # 更新されるパラメータの数を表示
     print(f"更新されるパラメータの数: {sum(p.numel() for p in clipcap.parameters() if p.requires_grad)}")
 
-    scheduler = get_linear_schedule_with_warmup(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-        optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader_shuffle)
-    )
+    if use_scheduler:
+        scheduler = get_linear_schedule_with_warmup(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+            optimizer, num_warmup_steps=warmup_steps, num_training_steps=epochs * len(train_loader_shuffle)
+        )
 
     loss_list = []
     loss_der_list = []
@@ -235,7 +236,8 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                     print("replay loss", loss_derpp.item(), "beta", beta)
 
             optimizer.step()
-            scheduler.step()
+            if use_scheduler:
+                scheduler.step()
             optimizer.zero_grad()
             progress.set_postfix({"loss": loss.item()})
 

@@ -198,8 +198,8 @@ if __name__ == '__main__':
         # agentA.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20-epoch-69.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
         agentB.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
         
-        agentA.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora__dropout)
-        agentB.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora__dropout)
+        agentA.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout, clipcap=False)
+        agentB.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout, clipcap=False)
 
         if "debug" in exp_name:
             observation_file = "communication_coco_50_cc3m_50"
