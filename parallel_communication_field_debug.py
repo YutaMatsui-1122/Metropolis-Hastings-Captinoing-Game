@@ -78,6 +78,23 @@ class CommunicationField():
         self.agentA.ProbVLM_Net.load_state_dict(torch.load(os.path.join(self.agentA.save_dir, f'{file_name}_A.pt')))
         self.agentB.ProbVLM_Net.load_state_dict(torch.load(os.path.join(self.agentB.save_dir, f'{file_name}_B.pt')))
 
+    def only_update_text_decoder(self, em_iter, file_name = "current_model"):
+        print("only update text encoder")
+        # テキストエンコーダのみ更新
+        self.agentA.perception()
+        self.agentB.perception()
+
+        proposed_w, proposed_captionA = self.agentA.propose(return_caption=True)
+        print("captionA:", proposed_captionA)
+
+        # self.agentB.judge(proposed_w.to(self.agentB.device), em_iter)
+        ar = self.agentB.judge(proposed_w.to(self.agentB.device), em_iter)
+        print("acceptance rate:", ar)
+
+        print(self.agentB.dataloader_MHNG_fix.dataset[0]["caption"], self.agentB.dataloader_MHNG_fix.dataset[10]["caption"],self.agentB.dataloader_MHNG_fix.dataset[-1]["caption"],self.agentB.dataloader_MHNG_fix.dataset[-2]["caption"],)
+
+        self.agentB.update_text_decoder(em_iter)
+
     def mhcg(self):
         # Metropolis-Hastings Captioning Game   
         agentA.perception()
@@ -172,6 +189,7 @@ if __name__ == '__main__':
     parser.add_argument('--pin_memory', default=False)
     parser.add_argument('--annealing', default="None")
     parser.add_argument('--mode', default="MHNG")
+    parser.add_argument('--te_only', action='store_true')
     parser.add_argument('--import_args', default="None")  # import args from saved json file for same configuration
     args = parser.parse_args()
 
@@ -198,8 +216,8 @@ if __name__ == '__main__':
         # agentA.load_pretrain(probvlm_path="models/official_model/probvlm/CC3M/probvlm_0.2_0.2_20-epoch-69.pth", clipcap_path="models/official_model/clipcap_conceptual_weights.pt", strict_clipcap=False)
         agentB.load_pretrain(probvlm_path="models/official_model/probvlm/COCO/probvlm_0.2_0.3_20-epoch-99.pth", clipcap_path="models/official_model/clipcap_coco_weights.pt", strict_clipcap=False)
         
-        agentA.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout, clipcap=False)
-        agentB.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout, clipcap=False)
+        agentA.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout)
+        agentB.lora_setting(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout)
 
         if "debug" in exp_name:
             observation_file = "communication_coco_50_cc3m_50"
@@ -235,18 +253,20 @@ if __name__ == '__main__':
         communication_field.communication_field_setup(coco_test_loader_fix_A, coco_test_loader_shuffle_A, coco_test_loader_fix_B, coco_test_loader_shuffle_B, mode=args.mode)
         save_args_to_json(args, filename="args.json", save_dir=f"exp/{exp_name}")
 
+        if args.te_only == False:
+            agentA.initialize_td_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
+            agentA.initialize_te_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
 
-
-        agentA.initialize_td_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
         agentB.initialize_td_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
-        agentA.initialize_te_buffer(conceptual_pretrain_loader, buffer_size=args.buffer_size)
         agentB.initialize_te_buffer(coco_pretrain_loader, buffer_size=args.buffer_size)
 
-        te_buffer_size = agentA.td_buffer.logit_buffer.element_size() * agentA.td_buffer.logit_buffer.numel()
 
         # 並列処理のための設定
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = str(find_open_port())
         mp.set_start_method('spawn', force=True)
 
-        communication_field.mhcg()
+        if args.te_only:
+            communication_field.only_update_text_decoder(-1)
+        else:
+            communication_field.mhcg()

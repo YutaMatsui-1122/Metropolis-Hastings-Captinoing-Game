@@ -262,11 +262,9 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
                 clipcap.state_dict(),
                 os.path.join(save_dir, f"{output_prefix}-{epoch:03d}.pt"),
             )
-    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.3)
-    print("epoch(finetune)", epoch, generated_text)
-    generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.01)
-    print("epoch(finetune)", epoch, generated_text)
-        
+        generated_text = generate_test(clipcap, CLIP_Net, train_loader_fix, tokenizer, 10, device = device, prefix_length = 10, temperature = 0.3)
+        print("epoch(finetune)", epoch, generated_text)
+    
     return clipcap
 
 def update_probvlm(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-4, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=1e-4):

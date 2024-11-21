@@ -118,36 +118,19 @@ class OneAgent(nn.Module):
             apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['block_alpha'], "2", r=r, alpha=alpha, dropout=dropout)
             apply_lora_to_layer(self.ProbVLM_Net.txt_BayesCap._modules['block_beta'], "2", r=r, alpha=alpha, dropout=dropout)
     
-        
         if clipcap:
             # print the parameters of the network
             # print("ClipCap")
-            for name, param in self.ClipCap.named_parameters():
-                print("name:", name, "param.requires_grad:", param.requires_grad, "param.shape:", param.shape)
             apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "0", r=r, alpha=alpha, dropout=dropout)
             apply_lora_to_layer(self.ClipCap.clip_project._modules['model'], "2", r=r, alpha=alpha, dropout=dropout)
-            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["c_attn","c_proj"])
+            peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=["wte", "wpe", "c_attn", "c_proj", "c_fc", ])
             self.ClipCap.gpt = get_peft_model(self.ClipCap.gpt, peft_config)
-
-            # print the parameters that are trainable
-            # print("ClipCap")
-            for name, param in self.ClipCap.named_parameters():
-                if param.requires_grad:
-                    print(name, param.shape)
-            
-
-        # print("Update parameters")
-        # print("ClipCap")
-        # for name, param in self.ClipCap.named_parameters():
-        #     if param.requires_grad:
-        #         print(name, param.shape)
-        # print("ProbVLM")
-        # for name, param in self.ProbVLM_Net.named_parameters(): 
-        #     if param.requires_grad:
-        #         print(name, param.shape)
-
+            # count trainable parameters
+            total_params = sum(p.numel() for p in self.ClipCap.parameters())
+            print(f'{total_params:,} total parameters.')
+            total_trainable_params = sum(p.numel() for p in self.ClipCap.parameters() if p.requires_grad)
+            print(f'{total_trainable_params:,} training parameters.')
         self = self.to(self.device)
-
 
     def communication_field_setup(self, dataloader_MHNG_fix, dataloader_MHNG_shuffle, MH_iter, EM_iter, mode="MHNG"):
         self.dataloader_MHNG_fix = dataloader_MHNG_fix
@@ -155,7 +138,7 @@ class OneAgent(nn.Module):
         self.MH_epochs = MH_iter
         self.EM_epochs = EM_iter
         annealing_epochs = min(self.EM_epochs // 2, 10)
-        self.beta_annealing_values = linear_schedule(0.995, 1, self.EM_epochs, annealing_epochs)
+        self.beta_annealing_values = linear_schedule(0.98, 1, self.EM_epochs, annealing_epochs)
         self.temperature_annealing_values = linear_schedule(0.7, 0.001, self.MH_epochs, self.MH_epochs)
         print("beta_annealing_values:", self.beta_annealing_values)
         print("temperature_annealing_values:", self.temperature_annealing_values)
@@ -325,7 +308,7 @@ class OneAgent(nn.Module):
         print("Agent", self.agent_name, " update text decoder")
         self.ClipCap.train()
         #update_clipcap_derpp(agent.CLIP_Net, agent.ClipCap, agent.tokenizer, finetune_train_dataloader, f"models/{args.save_dir}", epochs = 10, lr=args.lr, train_mode=args.cl_mode, device=device, buffer=buffer, alpha=der_alpha, beta=derpp_beta)
-        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=1e-5, train_mode=self.td_train_mode, device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.td_alpha_beta, beta=self.td_alpha_beta, reserovoir=False)
+        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=1e-4, train_mode=self.td_train_mode, device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.td_alpha_beta, beta=self.td_alpha_beta, reserovoir=False)
         self.ClipCap = updated_clipcap.eval()
     
     def update_text_encoder(self, em_epoch):
