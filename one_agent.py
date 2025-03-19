@@ -461,7 +461,7 @@ class OneAgent(nn.Module):
 
         print("Agent", self.agent_name, " update text decoder")
         self.ClipCap.train()
-        updated_clipcap = update_clipcap_derpp(self.z, self.CLIP_Net, self.ClipCap, self.tokenizer, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=self.td_lr, train_mode=self.td_train_mode, device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.td_alpha_beta, beta=self.td_alpha_beta, reserovoir=False)
+        updated_clipcap = update_clipcap_derpp(self.z, self.ClipCap, self.dataloader_MHNG_shuffle, self.dataloader_MHNG_fix, self.save_dir, epochs = self.td_update_epochs, lr=self.td_lr, train_mode=self.td_train_mode, device=self.device, buffer=self.td_buffer, output_prefix="clipcap_"+self.agent_name+f"_{em_epoch}", save_every=5, alpha=self.td_alpha_beta, beta=self.td_alpha_beta, reserovoir=False)
         self.ClipCap = updated_clipcap.eval()
 
     def update_text_decoder_distillation(self, speaker_agent, em_epoch):

@@ -15,14 +15,39 @@ import torch.distributed as dist
 from transformers import get_linear_schedule_with_warmup
 
 
-def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5, reserovoir = True):
-    
-    # Update the clipcap model with dark experience replay ++
+def update_clipcap_derpp(agent_z, clipcap, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "clipcap", train_mode = "None", device = "cuda:0", buffer = None, alpha = 0.5, beta = 0.5, reserovoir = True):
+    """
+    Update the ClipCap model using Dark Experience Replay++ (DERPP) training strategy.
+
+    This function trains the ClipCap model with a combination of standard cross-entropy loss,
+    dark experience replay (DER) loss, and DER++ loss for preventing catastrophic forgetting.
+    It supports various training modes such as DER, DERPP, ER, and ER_RS. The training process also employs a learning rate scheduler with
+    warmup steps.
+
+    Args:
+        agent_z (torch.Tensor): Precomputed image features for training samples.
+        clipcap: ClipCap model to be updated.
+        train_loader_shuffle: DataLoader with shuffled training samples.
+        train_loader_fix: DataLoader with fixed training samples.
+        save_dir (str): Directory to save model checkpoints and loss arrays.
+        epochs (int): Number of training epochs.
+        save_every (int, optional): Frequency (in epochs) to save model checkpoints.
+        lr (float, optional): Learning rate for the optimizer.
+        warmup_steps_percent (float, optional): Percentage of total steps used for warmup.
+        output_prefix (str, optional): Prefix for output file names.
+        train_mode (str, optional): Training mode; options include "ER_RS", "DER", "DERPP", or "None".
+        device (str, optional): Device identifier (e.g., "cuda:0").
+        buffer: Experience replay buffer instance.
+        alpha (float, optional): Weight for DER loss.
+        beta (float, optional): Weight for DER++ loss.
+        reserovoir (bool, optional): Flag to indicate reservoir sampling usage.
+
+    Returns:
+        Updated ClipCap model.
+    """
+
     clipcap = clipcap.to(device)
     clipcap.train()
-
-    CLIP_Net.eval()
-    CLIP_Net.to(device)
 
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -140,7 +165,32 @@ def update_clipcap_derpp(agent_z, CLIP_Net, clipcap, tokenizer, train_loader_shu
 
 def update_distillation_merge(listener_agent, speaker_agent, train_loader_shuffle, train_loader_fix, save_dir, epochs, save_every = 1, lr = 2e-5, warmup_steps_percent = 0.1, output_prefix = "distillation_merge", device = "cuda:0", train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5, reservoir = True):
     """
-    Distillation merge training for clipcap model
+    Train the listener agent's ClipCap model using distillation.
+
+    In this method, the listener agent learns from the speaker agent by matching the output
+    probability distributions (via KL divergence) of the ClipCap model. The training can also incorporate
+    dark experience replay (DER) and DER++ losses from a replay buffer.
+
+    Args:
+        listener_agent: Agent whose ClipCap model is to be updated.
+        speaker_agent: Agent providing target outputs for distillation.
+        train_loader_shuffle: DataLoader with shuffled training samples.
+        train_loader_fix: DataLoader with fixed training samples.
+        save_dir (str): Directory to save checkpoints and loss arrays.
+        epochs (int): Number of training epochs.
+        save_every (int, optional): Frequency (in epochs) to save model checkpoints.
+        lr (float, optional): Learning rate for the optimizer.
+        warmup_steps_percent (float, optional): Percentage of total steps used for warmup.
+        output_prefix (str, optional): Prefix for output file names.
+        device (str, optional): Device identifier (e.g., "cuda:0").
+        train_mode (str, optional): Training mode; options include "ER_RS", "DER", "DERPP", or "None".
+        buffer: Experience replay buffer instance.
+        alpha (float, optional): Weight for DER loss.
+        beta (float, optional): Weight for DER++ loss.
+        reservoir (bool, optional): Flag to indicate reservoir sampling usage.
+
+    Returns:
+        Updated ClipCap model of the listener agent.
     """
 
     print("start training distillation_merge with alpha:", alpha, "beta:", beta, "train_mode:", train_mode)
@@ -275,7 +325,40 @@ def update_distillation_merge(listener_agent, speaker_agent, train_loader_shuffl
     return listener_agent.ClipCap
 
 def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir, epochs, save_every=1, lr = 1e-5, output_prefix = "probvlm", device="cuda:0", Cri = TempCombLoss(), T1=1, T2=1, cross_modal_lambda=0.9, train_mode = "None", buffer = None, alpha = 0.5, beta = 0.5, pretrain_test_loader = None, fine_tune_test_loader = None, reservoir = True):
-    # Update the probvlm model with dark experience replay ++
+    """
+    Update the ProbVLM model using Dark Experience Replay++ (DERPP).
+
+    This function trains the text branch of the BayesCap network using a combined loss that
+    includes a primary loss (Cri) and a cross-modal regularization term. The training can be further
+    enhanced with DER or DERPP losses obtained from a replay buffer. Optionally, the function
+    can evaluate on pretrain and fine-tune test loaders at each epoch.
+
+    Args:
+        agent_z (torch.Tensor): Precomputed image features.
+        CLIP_Net: Pre-trained CLIP network used for encoding text.
+        BayesCap_Net: The ProbVLM network (BayesCap) to be updated.
+        train_loader: DataLoader providing training samples.
+        save_dir (str): Directory to save model checkpoints and loss arrays.
+        epochs (int): Number of training epochs.
+        save_every (int, optional): Frequency (in epochs) to save model checkpoints.
+        lr (float, optional): Learning rate for the optimizer.
+        output_prefix (str, optional): Prefix for output file names.
+        device (str, optional): Device identifier (e.g., "cuda:0").
+        Cri: Loss function instance (e.g., TempCombLoss()).
+        T1 (float, optional): Temperature parameter for loss computation.
+        T2 (float, optional): Secondary temperature parameter for loss computation.
+        cross_modal_lambda (float, optional): Weight for cross-modal regularization loss.
+        train_mode (str, optional): Training mode; options include "ER_RS", "DER", "DERPP", or "None".
+        buffer: Experience replay buffer instance.
+        alpha (float, optional): Weight for DER loss.
+        beta (float, optional): Weight for DERPP loss.
+        pretrain_test_loader: Optional DataLoader for pretrain testing.
+        fine_tune_test_loader: Optional DataLoader for fine-tuning testing.
+        reservoir (bool, optional): Flag to indicate reservoir sampling usage.
+
+    Returns:
+        Updated BayesCap_Net model.
+    """
     
     BayesCap_Net.txt_BayesCap.eval()
     # check the model before training
@@ -435,6 +518,34 @@ def update_probvlm_derpp(agent_z, CLIP_Net, BayesCap_Net, train_loader, save_dir
 
 
 def pretrain_probvlm(CLIP_Net, train_loader, BayesCap_Net, save_dir, epochs, device, lr=1e-4, output_prefix="probvlm", Cri=TempCombLoss(), T1=1e0, T2=5e-2, cross_modal_lambda_init=1e-4, cross_modal_lambda_final=1.0, start_annealing_epoch=5, train_mode="pretain"):
+    """
+    Pretrain the ProbVLM (BayesCap) model using cross-modal losses with annealing of the cross-modal lambda.
+
+    This function trains both the image and text branches of the BayesCap network by minimizing a loss
+    that includes individual losses for images and text, as well as a cross-modal loss that encourages
+    consistency between image and text embeddings. The cross-modal lambda is annealed linearly after a
+    specified starting epoch. The training progress and losses are periodically saved.
+
+    Args:
+        CLIP_Net: Pre-trained CLIP network used for feature extraction.
+        train_loader: DataLoader providing training samples.
+        BayesCap_Net: The ProbVLM (BayesCap) model to be pretrained.
+        save_dir (str): Directory to save model checkpoints and loss arrays.
+        epochs (int): Number of training epochs.
+        device (str): Device identifier (e.g., "cuda:0").
+        lr (float, optional): Learning rate for the optimizer.
+        output_prefix (str, optional): Prefix for output file names.
+        Cri: Loss function instance (e.g., TempCombLoss()).
+        T1 (float, optional): Temperature parameter for loss computation.
+        T2 (float, optional): Secondary temperature parameter for loss computation.
+        cross_modal_lambda_init (float, optional): Initial weight for cross-modal loss.
+        cross_modal_lambda_final (float, optional): Final weight for cross-modal loss after annealing.
+        start_annealing_epoch (int, optional): Epoch after which cross-modal lambda starts annealing.
+        train_mode (str, optional): Training mode string (currently "pretain" is expected).
+
+    Returns:
+        Tuple: (Pretrained BayesCap_Net model, final total loss, final image loss, final text loss, final image-to-text loss, final text-to-image loss)
+    """
     
     BayesCap_Net = BayesCap_Net.to(device)
     BayesCap_Net.img_BayesCap.train()
