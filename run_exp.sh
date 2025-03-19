@@ -1,1 +1,0 @@
-python pretrain_probvlm.py --clip_model_type ViT-B/32 --dataset COCO_B --num_workers 8 --device cuda:2 || True

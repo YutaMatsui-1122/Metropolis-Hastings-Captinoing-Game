@@ -2,8 +2,10 @@ dataset/
 dataset_images/
 models/
 DownloadConceptualCaptions/
-pacscore/
+pacscore/checkpoints/
 exp_eval/
+mergekit/
+pretrain_models/
 exp/
 .jpg
 .png

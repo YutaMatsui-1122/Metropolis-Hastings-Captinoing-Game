@@ -1,0 +1,31 @@
+# 実験の流れメモ
+
+# データセットの作成
+
+bash setup_split_coco_dataset.sh
+
+
+# 事前学習
+
+bash run_pretrain.sh
+
+
+# Fusion
+## run MHCG
+bash run_fusion.sh MHCG experiment_1
+
+## run Fine-tuning
+bash run_fusion.sh all_acceptance experiment_1
+
+## run distillation
+bash run_fusion.sh distillation experiment_1
+
+# 評価
+## evaluation of captioning
+bash run_eval_captioning.sh MHCG_experiment_1
+
+## evaluation of category score
+bash run_category_score.sh MHCG_experiment_1
+
+## evaluation of likelihood of signs
+python evaluate_communication.py --exp_name MHCG_experiment_1

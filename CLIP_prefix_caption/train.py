@@ -12,6 +12,14 @@ import argparse
 import json
 from typing import Tuple, Optional, Union
 
+# 修正版：カスタム初期化関数
+def custom_weight_init(layer, scale=2.0):
+    if isinstance(layer, nn.Linear):
+        # Xavier初期化の範囲を拡大するためにスケールを適用
+        nn.init.xavier_uniform_(layer.weight, gain=scale)
+        # バイアスの範囲も拡大
+        # if layer.bias is not None:
+        #     nn.init.uniform_(layer.bias, -0.005 * scale, 0.005 * scale)
 
 class MappingType(Enum):
     MLP = 'mlp'
@@ -82,15 +90,16 @@ class MLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
 
-    def __init__(self, sizes: Tuple[int, ...], bias=True, act=nn.Tanh):
+    def __init__(self, sizes: Tuple[int, ...], bias=True, act=nn.Tanh, init_scale=2.0):
         super(MLP, self).__init__()
         layers = []
         for i in range(len(sizes) - 1):
-            layers.append(nn.Linear(sizes[i], sizes[i + 1], bias=bias))
+            layer = nn.Linear(sizes[i], sizes[i + 1], bias=bias)
+            custom_weight_init(layer, scale=init_scale)
+            layers.append(layer)
             if i < len(sizes) - 2:
                 layers.append(act())
         self.model = nn.Sequential(*layers)
-
 
 class MlpTransformer(nn.Module):
     def __init__(self, in_dim, h_dim, out_d: Optional[int] = None, act=nnf.relu, dropout=0.):
@@ -242,10 +251,16 @@ class ClipCaptionModel(nn.Module):
         mapping_type = {'mlp': MappingType.MLP, 'transformer': MappingType.Transformer}[mapping_type]
         if mapping_type == MappingType.MLP:
             self.clip_project = MLP((prefix_size, (self.gpt_embedding_size * prefix_length) // 2,
-                                     self.gpt_embedding_size * prefix_length))
+                                     self.gpt_embedding_size * prefix_length), init_scale=10.0)
         else:
             self.clip_project = TransformerMapper(prefix_size, self.gpt_embedding_size, prefix_length,
                                                                      clip_length, num_layers)
+        # print("Model is initialized")
+        # for name, param in self.clip_project.named_parameters():
+        #     if len(param.shape) == 1:
+        #         print(name, param.shape, param[:5])
+        #     else:
+        #         print(name, param.shape, param[0][:5])
 
 class ClipCaptionPrefix(ClipCaptionModel):
 
